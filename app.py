@@ -29,7 +29,7 @@ def load_spatial_files():
         town_path = "data/towns.feather"
         gdf_towns = gpd.read_feather(town_path) if os.path.exists(town_path) else None
         
-        agri_path = "data/agri_simple.feather"
+        agri_path = "data/agri_shizuoka.feather"
         gdf_agri = gpd.read_feather(agri_path) if os.path.exists(agri_path) else None
         
         use_path = "data/use_districts.feather"
