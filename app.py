@@ -14,7 +14,7 @@ import base64
 
 # 1. 画面全体をワイドモードに設定
 st.set_page_config(layout="wide")
-st.title("静岡市 GIS開発要件判定システム")
+st.title("静岡市開発行為 要件判定システム")
 
 # ----------------------------------------------------
 # GISデータの読み込み（高速Feather版）
@@ -96,175 +96,279 @@ def calculate_area_m2(geom):
     return transform(project, geom).area
 
 # ----------------------------------------------------
-# 📄 xhtml2pdf：A4レイアウト
+# 📄 xhtml2pdf：A4レイアウト（物理タグによる強制改行・完全対策版）
 # ----------------------------------------------------
 def generate_pdf(report_data):
+    import io
+    from xhtml2pdf import pisa
+
+    # ====================================================
+    # 🛡️ 0. 基本情報の取得と完全な文字列化（None漏れ徹底ガード）
+    # ====================================================
     is_point_mode = report_data.get("geom_type") == "Point"
-    area_text = f"{report_data['site_area']:,.1f} ㎡" if not is_point_mode else "― (地点指定のため面積なし)"
     
+    site_area = report_data.get("site_area", 0.0)
+    if site_area is None:
+        site_area = 0.0
+    area_text = f"{site_area:,.1f} ㎡" if not is_point_mode else "―"
+    
+    # 💡 HTML内で直接 .get() していた箇所のNoneガード
+    loc_label = report_data.get('loc_label', '―')
+    if loc_label is None: loc_label = '―'
+    
+    current_zone = report_data.get('current_zone', '―')
+    if current_zone is None: current_zone = '―'
+    
+    target_use_name = report_data.get('target_use_name', '―')
+    if target_use_name is None: target_use_name = '―'
+    
+    combined_spec_str = report_data.get('combined_spec_str', '―')
+    if combined_spec_str is None: combined_spec_str = '―'
+    
+    # ====================================================
+    # 📋 1. 主要法令に基づく手続要件（None完全ガード版）
+    # ====================================================
     if is_point_mode:
-        toshi_status = "※敷地面積が1,000㎡（調整区域は500㎡）以上となる場合は開発許可申請の手続きが必要です。"
-        agri_status = "⚠️ 近傍に農地あり (要窓口確認)" if report_data["agri_near"] else "✅ 周辺に対象区域なし"
-        forest_status = "⚠️ 近傍に対象森林あり (要窓口確認)" if report_data["forest_near"] else "✅ 周辺に対象区域なし"
-        # 🚧 都市計画道路（点指定）
-        road_status = "⚠️ 近傍に計画道路あり (要窓口確認)" if report_data.get("road_near") else "✅ 周辺に対象区域なし"
-        # 🏺 文化財保護法（点指定）
-        cultural_status = "⚠️ 埋蔵文化財包蔵地の近傍 (要事前協議)" if report_data.get("cultural_near") else "✅ 周辺に対象区域なし"
+        toshi_status = "―"
     else:
-        toshi_status = "⚠️ 手続き必要" if report_data["is_dev_required"] else "✅ 対象外"
-        agri_status = f"⚠️ 手続き必要 (重複: {(report_data['agri_area']/report_data['site_area'])*100.0:.1f}%)" if report_data["agri_area"] > 1.0 else "✅ 対象外"
-        forest_status = f"⚠️ 要確認 (重複: {(report_data['forest_area']/report_data['site_area'])*100.0:.1f}%)" if report_data["forest_area"] > 1.0 else "✅ 対象外"
-        # 🚧 都市計画道路（区域描画）
-        road_status = f"⚠️ 計画道路内 (重複: {(report_data.get('road_area', 0)/report_data['site_area'])*100.0:.1f}%)" if report_data.get('road_area', 0) > 1.0 else "✅ 対象外"
-        # 🏺 文化財保護法（区域描画）
-        cultural_status = f"⚠️ 包蔵地内 (重複: {(report_data.get('cultural_area', 0)/report_data['site_area'])*100.0:.1f}%)" if report_data.get('cultural_area', 0) > 1.0 else "✅ 対象外"
-    
-    if report_data["check_morido"]:
-        morido_status = "⚠️ 規制対象規模" if report_data["morido_required"] else "✅ 対象外"
-    else:
-        morido_status = "― (計画なし)"
+        toshi_status = "必要" if report_data.get("is_dev_required") else "不要"
+    if toshi_status is None: toshi_status = "不要"
         
-    flood_status = f"⚠️ 該当 ({report_data['flood_river_name']})" if report_data.get("flood_hit") else "✅ 対象外"
+    # --- 農地法 ---
+    agri_status = report_data.get("agri_point_status", "農地なし")
+    if agri_status is None:
+        agri_status = "農地なし"
     
-    # 1km以上の場合は「1km以内に主要河川なし」に固定
-    river_status = f"{report_data['nearest_river_name']}まで約{report_data['nearest_river_dist']}m" if report_data.get("has_river_dist") else "1km以内に主要河川なし"
-
-    if is_point_mode:
-        dosha_status = "⚠️ 近傍50m以内に土砂災害警戒区域が存在します (要確認)" if report_data["dosha_near"] else "✅ 周辺に対象区域なし"
+    # --- 盛土規制法 ---
+    if report_data.get("check_morido"):
+        morido_status = "許可必要" if report_data.get("morido_required") else "許可不要"
     else:
-        if report_data.get("dosha_hit"):
-            labels = []
-            if report_data["dosha_red_area"] > 1.0:
-                labels.append(f"🔴 特別警戒(レッド): {(report_data['dosha_red_area']/report_data['site_area'])*100.0:.1f}%")
-            if report_data["dosha_yellow_area"] > 1.0:
-                labels.append(f"🟡 警戒(イエロー): {(report_data['dosha_yellow_area']/report_data['site_area'])*100.0:.1f}%")
-            dosha_status = "⚠️ " + " / ".join(labels)
-        else:
-            dosha_status = "✅ 対象外"
+        morido_status = "―"
+    if morido_status is None:
+        morido_status = "―"
+        
+    # --- 森林法 ---
+    forest_status = report_data.get("forest_point_status", "森林なし")
+    if forest_status is None:
+        forest_status = "森林なし"
+        
+    # --- 都市計画道路 ---
+    road_status = report_data.get("road_status", "区域外")
+    if road_status is None:
+        road_status = "区域外"
+        
+    # --- 埋蔵文化財 ---
+    cultural_status = report_data.get("cultural_point_status", "遺跡なし")
+    if cultural_status is None:
+        cultural_status = "遺跡なし"
+    
+    # ====================================================
+    # 🌊 2. 水害・土砂・道路・河川リスク（br改行版）
+    # ====================================================
+    flood_status = report_data.get("flood_status", "区域外")
+    if flood_status is None:
+        flood_status = "区域外"
+    
+    # 💡 divを廃止し、単純な <br /> に置き換えて左端のズレを防止
+    river_status_raw = report_data.get("river_dist_status", "1km以内に主要河川なし")
+    if river_status_raw is None:
+        river_status_raw = "1km以内に主要河川なし"
+    river_status = river_status_raw.replace("まで", 'まで<br />')
+    
+    road_display = "―"
 
-    tech_section = ""
+    # 💡 ここも <br /> に置き換え
+    dosha_status_raw = report_data.get("dosha_point_status", "区域外")
+    if dosha_status_raw is None:
+        dosha_status_raw = "区域外"
+    dosha_status = dosha_status_raw.replace("イエロー、50m以内にレッド", 'イエロー、<br />50m以内にレッド')
+
+    # ====================================================
+    # 🏗️ 3. 技術基準・附帯施設要件（br改行版）
+    # ====================================================
+    pond_display = "不要"
+    green_display = "不要"
+    
     if not is_point_mode:
-        basis_text = "巴川流域整備計画基準" if report_data.get("is_tomoe") else "静岡市指導要綱基準（目安）"
-        tech_section = f"""
-        <h3>2. 技術基準・附帯施設要件</h3>
-        <table class="main-table">
-            <tr>
-                <th>雨水調整池</th>
-                <td>
-                    {"検討必要" if report_data['site_area'] >= 1000 else "免除"}<br>
-                    <span style="font-size: 8.5pt; color:#555555;">目安: {report_data['vol_min']:,.0f}～{report_data['vol_max']:,.0f} ㎥ ({basis_text})</span>
-                </td>
-                <th>緑地確保</th>
-                <td>
-                    {"必要" if ("静岡市" in report_data['loc_label'] and report_data['site_area'] >= 1000) else "免除"}<br>
-                    <span style="font-size: 8.5pt; color:#666666;">目安: {report_data['max_green']:,.1f} ㎡ 以上 ({report_data['max_basis']})</span>
-                </td>
-            </tr>
-        </table>
-        """
+        # --- 調整池 ---
+        pond_text = report_data.get("pond_volume_str", "―")
+        is_tomoe_active = report_data.get("is_tomoe", False)
+        
+        if pond_text and pond_text not in ["不要", "免除", "―"]:
+            if is_tomoe_active:
+                pond_display = f"{pond_text}<br />（巴川流域）"
+            else:
+                pond_display = pond_text
+        elif pond_text == "―" or pond_text is None:
+            pond_display = "―"
 
+        # --- 緑地 ---
+        has_green = "静岡市" in loc_label and site_area >= 1000
+        max_green = report_data.get("max_green", 0.0)
+        if max_green is None: max_green = 0.0
+        
+        max_basis = report_data.get("max_basis", "不要")
+        if max_basis is None:
+            max_basis = "不要"
+            
+        if has_green and max_green > 0.0:
+            basis_str = max_basis if max_basis.startswith("（") else f"（{max_basis}）"
+            green_display = f"{max_green:,.1f} ㎡以上<br />{basis_str}"
+
+        # --- 緩衝帯 ---
+        bz_status = report_data.get("buffer_zone_status", "不要")
+        if bz_status is None: bz_status = "不要"
+
+    # ====================================================
+    # 🎨 4. HTML組み立て（最新の並び順・盛土削除・緩衝帯追加版）
+    # ====================================================
     html_content = f"""
     <html>
     <head>
         <meta charset="utf-8">
         <style>
             @page {{ size: a4; margin: 1.5cm; }}
-            body {{ font-family: "HeiseiMin-W3", serif; color: #333333; font-size: 10pt; line-height: 1.6; }}
+            body {{ font-family: "HeiseiMin-W3", serif; color: #121212; font-size: 10pt; line-height: 1.6; }}
             .header {{ border-bottom: 2px solid #003366; padding-bottom: 8px; margin-bottom: 20px; }}
             .title {{ font-size: 18pt; font-weight: bold; color: #003366; }}
+            
             table.meta-table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
-            table.meta-table td {{ padding: 8px 12px; border: 1px solid #cccccc; vertical-align: middle; }}
-            .meta-label {{ color: #555555; font-weight: bold; font-size: 9pt; width: 25%; background-color: #f8f9fa; }}
-            h3 {{ font-size: 12pt; font-weight: bold; border-left: 5px solid #003366; padding-left: 10px; margin-top: 20px; margin-bottom: 10px; color: #003366; }}
-            table.main-table {{ width: 100%; border-collapse: collapse; margin-bottom: 15px; }}
-            table.main-table th, table.main-table td {{ border: 1px solid #cccccc; padding: 8px 10px; font-size: 10pt; text-align: left; }}
-            table.main-table th {{ background-color: #f2f2f2; width: 25%; font-weight: bold; }}
-            .footer {{ text-align: center; font-size: 8pt; color: #888888; margin-top: 30px; border-top: 1px dashed #cccccc; padding-top: 10px; }}
+            table.meta-table td {{ padding: 8px 12px; border: 1px solid #555555; vertical-align: middle; }}
+            .meta-label {{ color: #121212; font-weight: bold; font-size: 9pt; width: 25%; background-color: #f8f9fa; }}
+            
+            table.main-table {{ width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 15px; }}
+            table.main-table th, table.main-table td {{ border: 1px solid #555555; font-size: 9.5pt; vertical-align: middle; }}
+            
+            /* 見出し(th)：上下左右すべて中央揃え */
+            table.main-table th {{ 
+                background-color: #f2f2f2; width: 20%; font-weight: bold; text-align: center;
+                padding: 15px 10px; /* 最小高さを確保 */
+            }}
+            
+            /* データ(td)：上下中央揃え ＆ 左寄せ */
+            table.main-table td {{ width: 30%; text-align: left; padding: 10px 10px 10px 15px; }}
+            
+            .footer {{ text-align: center; font-size: 8pt; color: #121212; margin-top: 40px; padding-top: 10px; }}
+            .footer-title {{ display: block; font-weight: bold; color: #121212; margin: 0 0 4px 0 !important; }}
+            .cell-line {{ display: block; margin: 0 !important; padding: 1px 0 !important; line-height: 1.4; }}
         </style>
     </head>
     <body>
-        <div class="header">
-            <div class="title">土地開発要件 判定結果レポート ({"地点指定モード" if is_point_mode else "区域描画モード"})</div>
-        </div>
+        <div class="header"><div class="title">開発行為 判定結果レポート</div></div>
 
         <table class="meta-table">
-            <tr><td class="meta-label">📍 敷地所在</td><td><strong>{report_data['loc_label']}</strong></td></tr>
+            <tr><td class="meta-label">📍 敷地所在</td><td><strong>{loc_label}</strong></td></tr>
             <tr><td class="meta-label">📐 敷地面積</td><td><strong>{area_text}</strong></td></tr>
-            <tr><td class="meta-label">🌐 区域区分</td><td><strong>{report_data['current_zone']}</strong></td></tr>
-            <tr><td class="meta-label">🏢 用途地域</td><td><strong>{report_data['target_use_name']}</strong></td></tr>
-            <tr><td class="meta-label">📐 建蔽率 / 容積率</td><td><strong>{report_data.get('kinpei_str', '―')} / {report_data.get('youseki_str', '―')}</strong></td></tr>
+            <tr><td class="meta-label">🌐 区域区分</td><td><strong>{current_zone}</strong></td></tr>
+            <tr><td class="meta-label">🏢 用途地域</td><td><strong>{target_use_name}</strong></td></tr>
+            <tr><td class="meta-label">📐 建蔽率 / 容積率</td><td><strong>{combined_spec_str}</strong></td></tr>
         </table>
 
-        <h3>1. 主要法令に基づく手続要件</h3>
         <table class="main-table">
             <tr>
-                <th>都市計画法</th><td>{toshi_status}</td>
+                <th>開発許可</th><td>{toshi_status}</td>
+                <th>緑地</th><td>{green_display}</td>
+            </tr>
+            <tr>
+                <th>土砂災害警戒区域</th><td>{dosha_status}</td>
+                <th>緩衝帯</th><td>{bz_status}</td>
+            </tr>
+            <tr>
                 <th>農地法</th><td>{agri_status}</td>
+                <th>調整池</th><td>{pond_display}</td>
             </tr>
             <tr>
-                <th>盛土規制法</th><td>{morido_status}</td>
+                <th>洪水浸水想定区域</th><td>{flood_status}</td>
+                <th>周辺の河川</th><td>{river_status}</td>
+            </tr>
+            <tr>
+                <th>埋蔵文化財</th><td>{cultural_status}</td>
+                <th>周辺の道路</th><td>{road_display}</td>
+            </tr>
+            <tr>
                 <th>森林法</th><td>{forest_status}</td>
-            </tr>
-            <tr>
                 <th>都市計画道路</th><td>{road_status}</td>
-                <th>文化財保護法</th><td>{cultural_status}</td>
-            </tr>
-        </table>
-
-        {tech_section}
-
-        <h3>{"2" if is_point_mode else "3"}. 水害・土砂・河川リスク</h3>
-        <table class="main-table">
-            <tr>
-                <th>洪水浸水想定</th><td>{flood_status}</td>
-                <th>最寄り主要河川</th><td>{river_status}</td>
-            </tr>
-            <tr>
-                <th>土砂災害警戒区域</th><td colspan="3">{dosha_status}</td>
             </tr>
         </table>
 
         <div class="footer">
-            静岡市 GIS開発要件判定システム - 暫定自動演算結果（実務時は各窓口へ要相談）
+            <div class="footer-title">静岡市開発行為 要件判定システム</div>
+            <div class="cell-line">本レポートはGISデータに基づく簡易判定結果であり、実際の状況や最新の指定内容とは異なる場合があります。</div>
+            <div class="cell-line">実務に際しては必ず各種データの出典元情報や、各関係官庁の担当窓口にて最新の法令・要件をご確認ください。</div>
         </div>
     </body>
     </html>
     """
+
+    # ====================================================
+    # 🖨️ 5. PDF生成バイナリへの出力
+    # ====================================================
     pdf_buffer = io.BytesIO()
     pisa_status = pisa.CreatePDF(io.BytesIO(html_content.encode("utf-8")), dest=pdf_buffer, encoding='utf-8')
-    if pisa_status.err: raise Exception("HTMLからPDFへの変換処理でエラーが発生しました。")
+    if pisa_status.err: 
+        raise Exception("HTMLからPDFへの変換処理でエラーが発生しました。")
     return pdf_buffer.getvalue()
-
 # ----------------------------------------------------
 # 💡 ポップアップ（ダイアログ）の定義
 # ----------------------------------------------------
 @st.dialog("📊 開発要件 判定結果レポート", width="large")
 def show_result_dialog(report_data):
+    # 💡 ダイアログ上部のタイトルを無理やり大きく見せるための、隠しタイトル用スタイルCSS
+    st.markdown("""
+        <style>
+        /* ダイアログの標準タイトルを大きく上書き */
+        div[data-testid="stDialog"] h2 {
+            font-size: 28px !important;
+            font-weight: bold !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     loc_label = report_data["loc_label"]
     is_point_mode = report_data.get("geom_type") == "Point"
     area_display = f"{report_data['site_area']:,.1f} ㎡" if not is_point_mode else "―"
     
+    lat = report_data.get("center_lat")
+    lon = report_data.get("center_lon")
+    
+    # 💡 緯度経度からそれぞれのURLを組み立て
+    if lat and lon:
+        # 🌐 区域区分用 (op=70 の後ろに &ot=1 を追加)
+        shizu_map_zone_url = f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=dm&mp=300&op=70&ot=1&vlf=000001"
+        # 💡 文字色を他の見出しと同じ「#555」に変更し、下線だけを残しました
+        zone_title_html = f'<a href="{shizu_map_zone_url}" target="_blank" style="color: #555; text-decoration: underline;">🌐 区域区分</a>'
+        
+        # 🏢 用途地域用 (op=70 の後ろに &ot=1 を追加)
+        shizu_map_use_url = f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=dm&mp=300&op=70&ot=1&vlf=000002"
+        # 💡 文字色を他の見出しと同じ「#555」に変更し、下線だけを残しました
+        use_title_html = f'<a href="{shizu_map_use_url}" target="_blank" style="color: #555; text-decoration: underline;">🏢 用途地域</a>'
+    else:
+        zone_title_html = '🌐 区域区分'
+        use_title_html = '🏢 用途地域'
+    
+    # 文字サイズと余白（padding）を大きく調整した特製ボックス
     box_html = (
-        f'<div style="background-color: #f0f2f6; padding: 14px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; gap: 10px;">'
-        f'  <div style="flex: 1;">'
-        f'    <div style="font-size: 0.8rem; color: #555;">📍 敷地所在</div>'
-        f'    <div style="font-size: 1.0rem; font-weight: bold; color: #111;">{loc_label}</div>'
+        f'<div style="background-color: #f0f2f6; padding: 22px 18px; border-radius: 10px; margin-bottom: 24px; display: flex; justify-content: space-between; gap: 12px; border-left: 6px solid #a3a8b4; align-items: flex-start;">'
+        f'  <div style="flex: 1.5;">'
+        f'    <div style="font-size: 1.15rem; color: #555; margin-bottom: 8px; font-weight: bold;">📍 敷地所在</div>'
+        f'    <div style="font-size: 1.35rem; font-weight: bold; color: #111; line-height: 1.3;">{loc_label}</div>'
         f'  </div>'
-        f'  <div style="flex: 1; border-left: 1px solid #ccc; padding-left: 15px;">'
-        f'    <div style="font-size: 0.8rem; color: #555;">📐 敷地面積</div>'
-        f'    <div style="font-size: 1.2rem; font-weight: bold; color: #111;">{area_display}</div>'
+        f'  <div style="flex: 1.0; border-left: 2px solid #cbd5e1; padding-left: 14px;">'
+        f'    <div style="font-size: 1.15rem; color: #555; margin-bottom: 8px; font-weight: bold;">📐 敷地面積</div>'
+        f'    <div style="font-size: 1.4rem; font-weight: bold; color: #111; line-height: 1.3;">{area_display}</div>'
         f'  </div>'
-        f'  <div style="flex: 1; border-left: 1px solid #ccc; padding-left: 15px;">'
-        f'    <div style="font-size: 0.8rem; color: #555;">🌐 区域区分</div>'
-        f'    <div style="font-size: 1.0rem; font-weight: bold; color: #111;">{report_data["current_zone"]}</div>'
+        f'  <div style="flex: 1.0; border-left: 2px solid #cbd5e1; padding-left: 14px;">'
+        f'    <div style="font-size: 1.15rem; color: #555; margin-bottom: 8px; font-weight: bold;">{zone_title_html}</div>'
+        f'    <div style="font-size: 1.35rem; font-weight: bold; color: #111; line-height: 1.3;">{report_data["current_zone"]}</div>'
         f'  </div>'
-        f'  <div style="flex: 1; border-left: 1px solid #ccc; padding-left: 15px;">'
-        f'    <div style="font-size: 0.8rem; color: #555;">🏢 用途地域</div>'
-        f'    <div style="font-size: 1.0rem; font-weight: bold; color: #111;">{report_data["target_use_name"]}</div>'
+        f'  <div style="flex: 1.5; border-left: 2px solid #cbd5e1; padding-left: 14px;">'
+        f'    <div style="font-size: 1.15rem; color: #555; margin-bottom: 8px; font-weight: bold;">{use_title_html}</div>'
+        f'    <div style="font-size: 1.35rem; font-weight: bold; color: #111; line-height: 1.3;">{report_data["target_use_name"]}</div>'
         f'  </div>'
-        f'  <div style="flex: 1; border-left: 1px solid #ccc; padding-left: 15px;">'
-        f'    <div style="font-size: 0.8rem; color: #555;">📐 建蔽率 / 容積率</div>'
-        f'    <div style="font-size: 1.0rem; font-weight: bold; color: #111;">{report_data.get("kinpei_str", "―")} / {report_data.get("youseki_str", "―")}</div>'
+        f'  <div style="flex: 1.0; border-left: 2px solid #cbd5e1; padding-left: 14px;">'
+        f'  <div style="flex: 1.0; border-left: none; padding-left: 0px;">'
+        f'    <div style="font-size: 1.15rem; color: #555; margin-bottom: 8px; font-weight: bold;">📐 建蔽率 / 容積率</div>'
+        f'    <div style="font-size: 1.4rem; font-weight: bold; color: #111; line-height: 1.3;">{report_data.get("combined_spec_str", "―")}</div>'
         f'  </div>'
         f'</div>'
     )
@@ -286,138 +390,384 @@ def show_result_dialog(report_data):
     diag_col1, diag_col2 = st.columns(2)
     
     with diag_col1:
-        if is_point_mode:
-            st.info("ℹ️ **【都市計画法】**\n\n地点指定（ピンポイント）モードです。開発行為を伴う敷地全体の面積が**1,000㎡以上（市街化調整区域の場合は500㎡以上）**となる場合は、開発許可申請の手続きが必要です。")
+        # --- 🏗️ 開発許可判定（緑地同期版） ---
+        if not is_point_mode:
+            is_dev_required = report_data.get("is_dev_required", False)
+
+            if is_dev_required:
+                bg_color, border_color, text_color, status_text, icon = "#ffebee", "#ef5350", "#c62828", "必要", "🚨"
+            else:
+                bg_color, border_color, text_color, status_text, icon = "#e8f5e9", "#66bb6a", "#2e7d32", "不要", "✅"
+
+            # 💡 緑地と完全に同じ padding: 16px、下段の display: flex (横並び) 構造に統一
+            st.markdown(
+                f'<div style="background-color: {bg_color}; border-left: 5px solid {border_color}; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+                f'  <div style="font-size: 1.3rem; font-weight: bold; color: {text_color}; margin-bottom: 8px;">{icon} 【開発許可】</div>'
+                f'  <div style="display: flex; justify-content: flex-end; align-items: center; color: {text_color}; font-weight: bold; gap: 8px; line-height: 1.4;">'
+                f'    <span style="font-size: 1.4rem;">{status_text}</span>'
+                f'  </div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+        # --- 🚨 土砂災害警戒区域UI表示（5段階文字列一致版・【】あり） ---
+        if report_data.get("gdf_dosha_none"):
+            st.caption("ℹ️ 土砂災害警戒区域データが見つかりません。")
         else:
-            if report_data["is_dev_required"]:
-                st.error("🚨 **【都市計画法】**\n\n開発許可申請の手続きが必要です。")
+            status = report_data.get("dosha_point_status", "区域外")
+
+            # 各ステータスに応じた適切なカラーパレットの割り当て
+            if status == "レッド":
+                bg_color, border_color, text_color = "#ffebee", "#ef5350", "#c62828"
+            elif status in ["イエロー、50m以内にレッド", "イエロー", "50m以内にレッド", "50m以内にイエロー"]:
+                bg_color, border_color, text_color = "#fff3e0", "#ffb74d", "#e65100"
             else:
-                st.success("✅ **【都市計画法】**\n\n開発許可の申請は不要です。")
+                bg_color, border_color, text_color = "#e8f5e9", "#66bb6a", "#2e7d32"
+
+            lat = report_data.get("center_lat")
+            lon = report_data.get("center_lon")
             
-        if is_point_mode:
-            if report_data["agri_near"]:
-                st.warning("🚜 **【農地法（近傍判定）】**\n\n指定地点の**50m以内**に農地区域が存在します。敷地境界が重なる、または該当する可能性があるため、窓口で詳細な境界を確認してください。")
+            if lat and lon:
+                shizu_map_dosha_url = f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=100&op=70&vlf=007f80"
+                # 💡 見出しに【】を戻しました
+                dosha_title_html = f'<a href="{shizu_map_dosha_url}" target="_blank" style="color: {text_color}; text-decoration: underline;">【土砂災害警戒区域】</a>'
             else:
-                st.success("✅ **【農地法】**\n\n周辺50m以内に対象の農地区域はありません。")
+                dosha_title_html = '【土砂災害警戒区域】'
+
+            st.markdown(
+                f'<div style="background-color: {bg_color}; border-left: 5px solid {border_color}; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+                f'  <div style="font-size: 1.3rem; font-weight: bold; color: {text_color}; margin-bottom: 8px;">🚨 {dosha_title_html}</div>'
+                f'  <div style="display: flex; justify-content: flex-end; align-items: center; color: {text_color}; font-weight: bold; gap: 8px; line-height: 1.4;">'
+                f'    <span style="font-size: 1.4rem;">{status}</span>'
+                f'  </div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+            
+        # --- 🚜 農地法UI表示 ---
+        agri_status = report_data.get("agri_point_status", "農地なし")
+
+        if agri_status == "農地あり":
+            # 🚨 赤系（他項目のレッドと同じ）
+            bg_color, border_color, text_color = "#ffebee", "#ef5350", "#c62828"
+            status_text = "農地あり"
+        elif agri_status == "50m以内に農地":
+            # 🟡 黄系（他項目のイエロー・近傍と同じ）
+            bg_color, border_color, text_color = "#fff3e0", "#ffb74d", "#e65100"
+            status_text = "50m以内に農地"
         else:
-            if report_data["input_mode"] == "🗺️ 地図に描画" and report_data["agri_area"] > 1.0:
-                agri_p = (report_data["agri_area"] / report_data["site_area"]) * 100.0
-                st.error(f"🚜 **【農地法】**\n\n敷地内に農地区域が重複しています（重複率: {agri_p:.1f}%）。手続きが必要です。")
-            else:
-                st.success("✅ **【農地法】**\n\n農地区域外です。")
+            # ✅ 緑系（他項目の区域外・不要と同じ）
+            bg_color, border_color, text_color = "#e8f5e9", "#66bb6a", "#2e7d32"
+            status_text = "農地なし"
+
+        # 💡 一旦、確実に開くトップページのURLを設定
+        emaff_url = "https://map.maff.go.jp/"
+        agri_title_html = f'<a href="{emaff_url}" target="_blank" style="color: {text_color}; text-decoration: underline;">【農地法】</a>'
+
+        # 💡 下段を column（縦並び）から緑地と同じ flex (横並び) 構造に統一
+        st.markdown(
+            f'<div style="background-color: {bg_color}; border-left: 5px solid {border_color}; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+            f'  <div style="font-size: 1.3rem; font-weight: bold; color: {text_color}; margin-bottom: 8px;">🚜 {agri_title_html}</div>'
+            f'  <div style="display: flex; justify-content: flex-end; align-items: center; color: {text_color}; font-weight: bold; gap: 8px; line-height: 1.4;">'
+            f'    <span style="font-size: 1.4rem;">{status_text}</span>'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
             
+        # --- 🚧 盛土規制法UI表示（緑地同期版・色修正） ---
         if report_data["check_morido"]:
             if report_data["morido_required"]:
-                st.warning("🚧 **【盛土規制法】**\n\n規制対象規模です。許可手続き必要。")
+                # 🚨 赤系（他項目のレッド・必要・ありと同じ）
+                bg_color, border_color, text_color = "#ffebee", "#ef5350", "#c62828"
+                status_text = "許可必要"
+                icon = "🚨"
             else:
-                st.success("✅ **【盛土規制法】**\n\n対象外、または届出・許可を要しない規模です。")
-            
-        if is_point_mode:
-            if report_data["forest_near"]:
-                st.warning("🌲 **【森林法（近傍判定）】**\n\n指定地点の**50m以内**に地域森林計画の対象森林が存在します。開発許可や事前届出等の手続き必要となる可能性があるため、窓口での確認を推奨します。")
-            else:
-                st.success("✅ **【森林法】**\n\n周辺50m以内に対象森林はありません。")
-        else:
-            if report_data["input_mode"] == "🗺️ 地図に描画" and report_data["forest_area"] > 1.0:
-                forest_p = (report_data["forest_area"] / report_data["site_area"]) * 100.0
-                st.error(f"🌲 **【森林法】**\n\n敷地内に地域森林計画の対象森林が重複しています（重複率: {forest_p:.1f}%）。\n\n開発許可や届出等の手続き必要となる可能性があります。")
-            else:
-                st.success("✅ **【森林法】**\n\n対象の森林区域外です。")
+                # ✅ 緑系（対象外・不要）
+                bg_color, border_color, text_color = "#e8f5e9", "#66bb6a", "#2e7d32"
+                status_text = "許可不要"
+                icon = "✅"
 
-        # 🚧 都市計画道路の表示（新規追加）
-        if is_point_mode:
-            if report_data.get("road_near"):
-                st.warning("🚧 **【都市計画道路（近傍判定）**\n\n指定地点の**50m以内**に都市計画道路の決定区域があります。計画線に抵触するかどうか、窓口での詳細な確認が必要です。")
-            else:
-                st.success("✅ **【都市計画道路】**\n\n周辺50m以内に都市計画道路の決定区域はありません。")
-        else:
-            if report_data["input_mode"] == "🗺️ 地図に描画" and report_data.get("road_area", 0) > 1.0:
-                road_p = (report_data["road_area"] / report_data["site_area"]) * 100.0
-                st.error(f"🚧 **【都市計画道路】**\n\n開発区域内に都市計画道路の計画区域が重複しています（重複率: {road_p:.1f}%）。\n\n⚠️ 都市計画法第53条に基づく建築許可申請などの手続きが必要となる可能性が高いです。")
-            else:
-                st.success("✅ **【都市計画道路】**\n\n都市計画道路の区域外です。")
+            # 💡 構造・サイズは「緑地同期版」を完全維持
+            st.markdown(
+                f'<div style="background-color: {bg_color}; border-left: 5px solid {border_color}; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+                f'  <div style="font-size: 1.3rem; font-weight: bold; color: {text_color}; margin-bottom: 8px;">{icon} 【盛土規制法】</div>'
+                f'  <div style="display: flex; justify-content: flex-end; align-items: center; color: {text_color}; font-weight: bold; gap: 8px; line-height: 1.4;">'
+                f'    <span style="font-size: 1.4rem;">{status_text}</span>'
+                f'  </div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
 
-        # 🏺 埋蔵文化財包蔵地の表示（新規追加）
-        if is_point_mode:
-            if report_data.get("cultural_near"):
-                st.warning("🏺 **【文化財保護法（近傍判定）】**\n\n指定地点の**50m以内**に周知の埋蔵文化財包蔵地が存在します。掘削を伴う工事を行う場合、事前協議や届出が必要になる可能性があるため要確認です。")
-            else:
-                st.success("✅ **【埋蔵文化財包蔵地】**\n\n周辺50m以内に周知の埋蔵文化財包蔵地はありません。")
+        # --- 🌊 洪水浸水想定区域UI表示（リンク付き改訂版・緑地同期） ---
+        status = report_data.get("flood_status", "区域外")
+        
+        if status == "区域外":
+            bg_color, border_color, text_color = "#e8f5e9", "#66bb6a", "#2e7d32"
         else:
-            if report_data["input_mode"] == "🗺️ 地図に描画" and report_data.get("cultural_area", 0) > 1.0:
-                cultural_p = (report_data["cultural_area"] / report_data["site_area"]) * 100.0
-                st.error(f"🏺 **【埋蔵文化財包蔵地】**\n\n開発区域の一部または全部が**周知の埋蔵文化財包蔵地に含まれています**（重複率: {cultural_p:.1f}%）。\n\n⚠️ 土木工事等の着手日の60日前までに、文化財保護法第93条に基づく事前の届出（都道府県・政令市宛）が必要です。")
-            else:
-                st.success("✅ **【埋蔵文化財包蔵地】**\n\n周知の埋蔵文化財包蔵地の対象外です。")
+            bg_color, border_color, text_color = "#ffebee", "#ef5350", "#c62828"
+
+        # 💡 緯度経度を取得して「しずマップ（洪水用）」のURLを組み立て
+        lat = report_data.get("center_lat")
+        lon = report_data.get("center_lon")
+        
+        if lat and lon:
+            # ④t=roadmap&mp=101 ⑤op=70 [ot=1] ⑥vlf=0003ffffffff... を適用
+            shizu_map_flood_url = f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=101&op=70&ot=1&vlf=0003ffffffffffffffffffffffffff"
+            # 見出しをリンク化（ステータスの文字色と同化させます）
+            flood_title_html = f'<a href="{shizu_map_flood_url}" target="_blank" style="color: {text_color}; text-decoration: underline;">【洪水浸水想定区域】</a>'
+        else:
+            flood_title_html = '【洪水浸水想定区域】'
+
+        # 💡 見出しの無駄な<div>の改行とline-heightを排除し、下段を緑地と同じflex横並びに統一
+        st.markdown(
+            f'<div style="background-color: {bg_color}; border-left: 5px solid {border_color}; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+            f'  <div style="font-size: 1.3rem; font-weight: bold; color: {text_color}; margin-bottom: 8px;">🌊 {flood_title_html}</div>'
+            f'  <div style="display: flex; justify-content: flex-end; align-items: center; color: {text_color}; font-weight: bold; gap: 8px; line-height: 1.4;">'
+            f'    <span style="font-size: 1.4rem;">{status}</span>'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+
+        # --- 🏺 埋蔵文化財UI表示（リンク付き改訂版・緑地同期） ---
+        status = report_data.get("cultural_point_status", "✅ 対象外")
+        
+        if "対象外" in status:
+            bg_color, border_color, text_color = "#e8f5e9", "#66bb6a", "#2e7d32"
+        else:
+            bg_color, border_color, text_color = "#fff3e0", "#ffb74d", "#e65100"
+
+        # 💡 緯度経度を取得して「しずマップ（文化財用）」のURLを組み立て
+        lat = report_data.get("center_lat")
+        lon = report_data.get("center_lon")
+        
+        if lat and lon:
+            # ④t=roadmap&mp=402 ⑤op=70 [ot=1] ⑥vlf=-1 を適用
+            shizu_map_cultural_url = f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=402&op=70&ot=1&vlf=-1"
+            # 見出しをリンク化（ステータスの文字色と同化させます）
+            cultural_title_html = f'<a href="{shizu_map_cultural_url}" target="_blank" style="color: {text_color}; text-decoration: underline;">【埋蔵文化財】</a>'
+        else:
+            cultural_title_html = '【埋蔵文化財】'
+
+        # 💡 見出しの余分な<div>ネストとline-heightを排除し、右側ステータスをflex横並び（align-items: center）に統一
+        st.markdown(
+            f'<div style="background-color: {bg_color}; border-left: 5px solid {border_color}; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+            f'  <div style="font-size: 1.3rem; font-weight: bold; color: {text_color}; margin-bottom: 8px;">🏺 {cultural_title_html}</div>'
+            f'  <div style="display: flex; justify-content: flex-end; align-items: center; color: {text_color}; font-weight: bold; gap: 8px; line-height: 1.4;">'
+            f'    <span style="font-size: 1.4rem;">{status}</span>'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+     
+        # --- 🌲 森林法UI表示 ---
+        forest_status = report_data.get("forest_point_status", "森林なし")
+
+        if forest_status == "森林あり":
+            # 🚨 赤系（直撃）
+            bg_color, border_color, text_color = "#ffebee", "#ef5350", "#c62828"
+            status_text = "森林あり"
+        elif forest_status == "50m以内に森林":
+            # 🟡 黄系（50m近傍）
+            bg_color, border_color, text_color = "#fff3e0", "#ffb74d", "#e65100"
+            status_text = "50m以内に森林"
+        else:
+            # ✅ 緑系（非該当）
+            bg_color, border_color, text_color = "#e8f5e9", "#66bb6a", "#2e7d32"
+            status_text = "森林なし"
+
+        # 💡 同意画面に座標を引き連れていくURLにします
+        lat = report_data.get("center_lat")
+        lon = report_data.get("center_lon")
+        
+        if lat and lon:
+            # 同意画面でURL欄に残るため、開いた後に末尾の「#15/緯度/経度」の部分をコピペして使えます
+            fcloud_url = f"https://fcloud.pref.shizuoka.jp/fgis/?version=1.26.0525.a#15/{lat:.5f}/{lon:.5f}"
+            forest_title_html = f'<a href="{fcloud_url}" target="_blank" style="color: {text_color}; text-decoration: underline;">【森林法】</a>'
+        else:
+            forest_title_html = '【森林法】'
+
+        # 💡 下段を column（縦並び）から緑地と同じ flex (横並び) 構造に統一
+        st.markdown(
+            f'<div style="background-color: {bg_color}; border-left: 5px solid {border_color}; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+            f'  <div style="font-size: 1.3rem; font-weight: bold; color: {text_color}; margin-bottom: 8px;">🌲 {forest_title_html}</div>'
+            f'  <div style="display: flex; justify-content: flex-end; align-items: center; color: {text_color}; font-weight: bold; gap: 8px; line-height: 1.4;">'
+            f'    <span style="font-size: 1.4rem;">{status_text}</span>'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
 
     with diag_col2:
-        if not is_point_mode:
-            if report_data["site_area"] >= 1000:
-                basis_text = "巴川流域整備計画基準" if report_data["is_tomoe"] else "静岡市開発指導要綱基準（目安）"
-                st.info(f"💧 **【調整池】**\n\n設置の検討が必要です。\n\n必要容量の目安:\n**{report_data['vol_min']:,.0f} ～ {report_data['vol_max']:,.0f} ㎥**\n\n（適用: {basis_text}）")
+        # --- 🌲 緑地UI表示 ---  
+        if "静岡市" in loc_label and report_data["site_area"] >= 1000:
+            # 1. 工場立地法かどうかの判定（元の根拠テキストに「工場」が含まれるかで判定）
+            is_factory = "工場" in str(report_data.get("max_basis", ""))
+            
+            import math
+            if is_factory:
+                # 工場立地法の場合は25%（20%+5%）で面積を計算し、小数第2位で切り上げ
+                raw_green_area = report_data["site_area"] * 0.25
+                green_area_val = math.ceil(raw_green_area * 100) / 100
+                basis_text = "20%+5%, 工場立地法"
             else:
-                st.success("✅ **【調整池】**\n\n指導基準に基づく設置義務はありません。")
-                
-            if "静岡市" in loc_label and report_data["site_area"] >= 1000:
-                notice_text = "\n\n⚠️ 事業目的が未選択のため、一般基準（みどり条例）で暫定算出しています。" if report_data["purpose_none"] else ""
-                st.warning(
-                    f"🌲 **【緑地】**\n\n"
-                    f"確保が必要な緑地面積の目安:\n**{report_data['max_green']:,.1f} ㎡ 以上**\n\n"
-                    f"📝 算出根拠: {report_data['max_basis']}{notice_text}"
-                )
-            else:
-                st.success("✅ **【緑地】**\n\n静岡市外、または敷地1,000㎡未満のため緑地の確保義務はありません。")
-
-        if report_data["input_mode"] == "🗺️ 地図に描画":
-            if report_data["gdf_flood_none"]:
-                st.caption("ℹ️ 洪水浸水想定区域データが見つかりません。")
-            elif report_data["flood_hit"]:
-                st.error(
-                    f"🌊 **【洪水浸水想定区域】**\n\n"
-                    f"想定最大規模の想定浸水域に**該当しています**。\n\n"
-                    f"* **対象河川:** {report_data['flood_river_name']}\n"
-                    f"* **浸水深ランク:** コード {report_data['flood_rank_code']} : {report_data['flood_desc']}\n\n"
-                    f"⚠️ 重大事項説明の対象エリアです。建築計画時の床高確認や避難確保計画等について窓口へ相談をお勧めします。"
-                )
-            else:
-                st.success("✅ **【洪水浸水想定区域】**\n\n想定最大規模の洪水浸水想定区域外です。")
-
-        if is_point_mode:
-            if report_data["dosha_near"]:
-                st.error("🚨 **【土砂災害警戒区域（近傍判定）】**\n\n指定地点の**50m以内**に土砂災害警戒区域（イエロー・レッド）が存在します。敷地近傍のため、ハザードマップ等で詳細な位置関係を必ずご確認ください。")
-            else:
-                st.success("✅ **【土砂災害警戒区域】**\n\n周辺50m以内に土砂災害警戒区域はありません。")
+                # 通常（5%）の場合も、既存の max_green をベースに小数第2位で切り上げ
+                raw_green_area = report_data["max_green"]
+                green_area_val = math.ceil(raw_green_area * 100) / 100
+                basis_text = "5%, 市みどり条例"
+            
+            # 💡 line-height: 1.4 を追加し、align-items: center に変更して高さを固定
+            st.markdown(
+                f'<div style="background-color: #fff3e0; border-left: 5px solid #ffb74d; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+                f'  <div style="font-size: 1.3rem; font-weight: bold; color: #e65100; margin-bottom: 8px;">🌲 【緑地】</div>'
+                f'  <div style="display: flex; justify-content: flex-end; align-items: center; color: #e65100; font-weight: bold; gap: 8px; line-height: 1.4;">'
+                f'    <span style="font-size: 1.15rem;">（{basis_text}）</span>'
+                f'    <span style="font-size: 1.4rem;">{green_area_val:,.2f}㎡以上</span>'
+                f'  </div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
         else:
-            if report_data.get("gdf_dosha_none"):
-                st.caption("ℹ️ 土砂災害警戒区域データが見つかりません。")
-            elif report_data.get("dosha_hit"):
-                warning_msg = "🚨 **【土砂災害警戒区域】**\n\n開発区域の一部または全部が**土砂災害警戒区域に含まれています**。\n\n" if report_data["dosha_red_area"] > 1.0 else "⚠️ **【土砂災害警戒区域】**\n\n開発区域の一部または全部が**土砂災害警戒区域に含まれています**。\n\n"
-                if report_data["dosha_red_area"] > 1.0:
-                    red_p = (report_data["dosha_red_area"] / report_data["site_area"]) * 100.0
-                    warning_msg += f"* **特別警戒区域 (レッドゾーン):** 重複 {report_data['dosha_red_area']:,.1f} ㎡ ({red_p:.1f}%)\n"
-                if report_data["dosha_yellow_area"] > 1.0:
-                    yellow_p = (report_data["dosha_yellow_area"] / report_data["site_area"]) * 100.0
-                    warning_msg += f"* **警戒区域 (イエローゾーン):** 重複 {report_data['dosha_yellow_area']:,.1f} ㎡ ({yellow_p:.1f}%)\n"
-                if report_data["dosha_red_area"] > 1.0:
-                    warning_msg += "\n⚠️ レッドゾーン内での特定の開発行為には制限、構造規制が課されます。建築・開発前に必ず担当窓口へご確認ください。"
-                    st.error(warning_msg)
-                else:
-                    warning_msg += "\n⚠️ イエローゾーン内での開発・建築時は、ハザードマップ等による避難体制の確認および重大事項説明への記載が必要です。窓口へご確認ください。"
-                    st.warning(warning_msg)
-            else:
-                st.success("✅ **【土砂災害警戒区域】**\n\n土砂災害警戒区域（イエロー・レッド）の対象外です。")
+            st.markdown(
+                f'<div style="background-color: #fff3e0; border-left: 5px solid #ffb74d; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+                f'  <div style="font-size: 1.3rem; font-weight: bold; color: #e65100; margin-bottom: 8px;">🌲 【緑地】</div>'
+                f'  <div style="display: flex; flex-direction: column; align-items: flex-end; color: #e65100; line-height: 1.4;">'
+                f'    <span style="font-size: 1.4rem; font-weight: bold;">不要</span>'
+                f'  </div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
 
-        # 🛠️ 河川情報の表示処理（インデント外に移譲：ピン指定モードとポリゴンモード共通化）
-        if report_data["input_mode"] == "🗺️ 地図に描画":
-            if report_data["has_river_dist"]:
-                st.info(
-                    f"ℹ️ **【周辺の河川情報】**\n\n"
-                    f"もっとも近い主要河川は **{report_data['nearest_river_name']}（{report_data['nearest_river_class']}）** です。\n\n"
-                    f"* **直線距離:** 約 {report_data['nearest_river_dist']} メートル\n\n"
-                    f"※河川境界からの距離によっては河川法に基づく許可申請が必要な場合があります。"
-                )
-            else:
-                st.success("✅ **【周辺の河川情報】**\n\n1km以内に該当する主要河川はありません。")
+        # --- 🌳 緩衝帯UI表示（緑地同期版） ---
+        bz_status = report_data.get("buffer_zone_status", "不要")
+
+        if bz_status != "不要":
+            bg_color, border_color, text_color = "#fff3e0", "#ffb74d", "#e65100"
+
+            # 💡 構造を緑地と完全に同一に統一
+            st.markdown(
+                f'<div style="background-color: {bg_color}; border-left: 5px solid {border_color}; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+                f'  <div style="font-size: 1.3rem; font-weight: bold; color: {text_color}; margin-bottom: 8px;">🌳 【緩衝帯】</div>'
+                f'  <div style="display: flex; justify-content: flex-end; align-items: center; color: {text_color}; font-weight: bold; gap: 8px; line-height: 1.4;">'
+                f'    <span style="font-size: 1.4rem;">{bz_status}</span>'
+                f'  </div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+        # --- 💧 調整池UI表示 ---
+        if not is_point_mode:
+            is_tomoe_active = report_data.get("is_tomoe", False)
+            left_text = f'<span style="font-size: 1.15rem;">（巴川流域）</span>' if is_tomoe_active else ""
+            
+            # 💡 構造・余白・フォント配置を完全に緑地と完全同期
+            st.markdown(
+                f'<div style="background-color: #e8f4f8; border-left: 5px solid #29b6f6; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+                f'  <div style="font-size: 1.3rem; font-weight: bold; color: #0288d1; margin-bottom: 8px;">💧 【調整池】</div>'
+                f'  <div style="display: flex; justify-content: flex-end; align-items: center; color: #0288d1; font-weight: bold; gap: 8px; line-height: 1.4;">'
+                f'    {left_text}'
+                f'    <span style="font-size: 1.4rem;">{report_data.get("pond_volume_str", "―")}</span>'
+                f'  </div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+        # --- 🏞️ 河川距離UI表示 ---
+        r_dist_status = report_data.get("river_dist_status", "1km以内に主要河川なし")
+
+        if "1km以内に主要河川なし" not in r_dist_status:
+            bg_color, border_color, text_color = "#e8f4f8", "#29b6f6", "#0288d1"
+            status_text = r_dist_status
+        else:
+            bg_color, border_color, text_color = "#e8f5e9", "#66bb6a", "#2e7d32"
+            status_text = "1km以内に主要河川なし"
+
+        # 💡 関係ない部分は変えずに、ここにしずマップのURL生成だけを追加
+        lat = report_data.get("center_lat")
+        lon = report_data.get("center_lon")
+        
+        if lat and lon:
+            # ④t=roadmap&mp=308 ⑤op=70 &ot=1 ⑥vlf=-1 を適用
+            shizu_map_river_url = f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=308&op=70&ot=1&vlf=-1"
+            river_title_html = f'<a href="{shizu_map_river_url}" target="_blank" style="color: {text_color}; text-decoration: underline;">【周辺の河川】</a>'
+        else:
+            river_title_html = '【周辺の河川】'
+
+        # 💡 下段を緑地と同じ flex 横並び（align-items: center）構造に統一
+        st.markdown(
+            f'<div style="background-color: {bg_color}; border-left: 5px solid {border_color}; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+            f'  <div style="font-size: 1.3rem; font-weight: bold; color: {text_color}; margin-bottom: 8px;">🏞️ {river_title_html}</div>'
+            f'  <div style="display: flex; justify-content: flex-end; align-items: center; color: {text_color}; font-weight: bold; gap: 8px; line-height: 1.4;">'
+            f'    <span style="font-size: 1.4rem;">{status_text}</span>'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+
+        # --- 🚗 周辺の道路（新規項目・南東引き戻し補正版） ---
+        lat = report_data.get("center_lat")
+        lon = report_data.get("center_lon")
+
+        # 全体の調和を考えた緑系のカラーパレット
+        bg_green = "#e8f5e9"
+        border_green = "#66bb6a"
+        text_green = "#2e7d32"
+
+        if lat and lon:
+            # 💡 北西へのズレを相殺するため、符号を反転（南東へ引き戻す）
+            corrected_lat = lat - 0.00328
+            corrected_lon = lon + 0.00321
+
+            # 補正済みの座標をURLに適用
+            road_url = f"https://www2.wagmap.jp/shizuoka/Map?mid=1&mpx={corrected_lon:.6f}&mpy={corrected_lat:.6f}&bsw=1200&bsh=800"
+            road_title_html = f'<a href="{road_url}" target="_blank" style="color: {text_green}; text-decoration: underline;">【周辺の道路】</a>'
+            road_text_html = f'<a href="{road_url}" target="_blank" style="color: {text_green}; text-decoration: underline; font-size: 1.4rem; font-weight: bold;">🔗静岡市地図情報サービス</a>'
+        else:
+            road_title_html = '【周辺の道路】'
+            road_text_html = f'<span style="font-size: 1.4rem; font-weight: bold; color: {text_green};">🔗静岡市地図情報サービス</span>'
+
+        # 💡 下段の構造を column（縦並び）から緑地と同じ flex 横並び（align-items: center）構造に統一
+        st.markdown(
+            f'<div style="background-color: {bg_green}; border-left: 5px solid {border_green}; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+            f'  <div style="font-size: 1.3rem; font-weight: bold; color: {text_green}; margin-bottom: 8px;">🚗 {road_title_html}</div>'
+            f'  <div style="display: flex; justify-content: flex-end; align-items: center; font-weight: bold; gap: 8px; line-height: 1.4;">'
+            f'    {road_text_html}'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+
+        # --- 🛣️ 都市計画道路UI表示（リンク付き改訂版・緑地同期） ---
+        status = report_data.get("road_status", "区域外")
+        
+        if status == "区域外":
+            bg_color, border_color, text_color = "#e8f5e9", "#66bb6a", "#2e7d32"
+        else:
+            bg_color, border_color, text_color = "#ffebee", "#ef5350", "#c62828"
+
+        # 💡 緯度経度を取得して「しずマップ（都市計画道路用）」のURLを組み立て
+        lat = report_data.get("center_lat")
+        lon = report_data.get("center_lon")
+        
+        if lat and lon:
+            # ④t=dm&mp=300 ⑤op=70 ⑥vlf=000010000000 (ot=1も追加)
+            shizu_map_road_url = f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=dm&mp=300&op=70&ot=1&vlf=000010000000"
+            # 見出しをリンク化（ステータスの文字色と同化させます）
+            road_title_html = f'<a href="{shizu_map_road_url}" target="_blank" style="color: {text_color}; text-decoration: underline;">【都市計画道路】</a>'
+        else:
+            road_title_html = '【都市計画道路】'
+
+        # 💡 見出しの無駄な余白を排除し、下段を緑地と同じ flex 横並び（align-items: center）構造に統一
+        st.markdown(
+            f'<div style="background-color: {bg_color}; border-left: 5px solid {border_color}; padding: 16px; border-radius: 4px; margin-bottom: 16px;">'
+            f'  <div style="font-size: 1.3rem; font-weight: bold; color: {text_color}; margin-bottom: 8px;">🛣️ {road_title_html}</div>'
+            f'  <div style="display: flex; justify-content: flex-end; align-items: center; color: {text_color}; font-weight: bold; gap: 8px; line-height: 1.4;">'
+            f'    <span style="font-size: 1.4rem;">{status}</span>'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
 
 # ----------------------------------------------------
 # 📐 画面レイアウトの2分割（2:8 比率）
@@ -554,8 +904,8 @@ with col_center:
     with col_title:
         st.subheader("🗺️ 開発区域の指定")
         
-    m = folium.Map(location=[34.9755, 138.3826], zoom_start=14, max_zoom=20, control_scale=True)
-    folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', attr='Google', name='Google マップ (標準)', max_zoom=20).add_to(m)
+    m = folium.Map(location=[34.9792, 138.3831], zoom_start=15, max_zoom=20, control_scale=True)
+    folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', attr='Google', name='Google Map', max_zoom=20).add_to(m)
     folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google', name='Google 航空写真', max_zoom=20).add_to(m)
     folium.TileLayer(tiles='https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', attr='国土地理院', name='国土地理院 航空写真', max_zoom=18).add_to(m)
 
@@ -623,7 +973,14 @@ with col_center:
             search_poly = buffer_gdf_4326.geometry.iloc[0]
         else:
             site_area = calculate_area_m2(user_geom)
-            search_poly = user_geom
+            # 💡 通常（ポリゴン）モードでも、外縁から50mの検索用バッファポリゴンを生成する
+            user_gdf_m = user_gdf.to_crs(epsg=6676)
+            buffer_geom_m = user_gdf_m.geometry.iloc[0].buffer(50.0)
+            buffer_gdf = gpd.GeoDataFrame(geometry=[buffer_geom_m], crs="EPSG:6676")
+            buffer_gdf_4326 = buffer_gdf.to_crs(epsg=4326)
+            search_poly = buffer_gdf_4326.geometry.iloc[0]
+            center_lon = user_geom.centroid.x
+            center_lat = user_geom.centroid.y
 
         # --- 区域区分判定 ---
         if gdf_shigaika is not None and gdf_chousei is not None:
@@ -638,9 +995,30 @@ with col_center:
                 shigaika_area = inter_shigaika.geometry.map(calculate_area_m2).sum() if not inter_shigaika.empty else 0.0
                 inter_chousei = gpd.overlay(user_gdf, gdf_chousei, how='intersection')
                 chousei_area = inter_chousei.geometry.map(calculate_area_m2).sum() if not inter_chousei.empty else 0.0
-                if shigaika_area >= site_area * 0.99: current_zone = "市街化区域"
-                elif chousei_area >= site_area * 0.99: current_zone = "市街化調整区域"
-                else: current_zone = "混在区域（要確認）"
+                
+                # 99%以上の場合は単一区域として判定
+                if shigaika_area >= site_area * 0.99:
+                    current_zone = "市街化区域"
+                elif chousei_area >= site_area * 0.99:
+                    current_zone = "市街化調整区域"
+                else:
+                    # 99%未満＝またがっている（混在）場合の処理
+                    zones = []
+                    if shigaika_area > 1.0:  # 1㎡以上の重複があれば追加
+                        zones.append("市街化区域")
+                    if chousei_area > 1.0:
+                        zones.append("市街化調整区域")
+                        
+                    # 念のため、どちらでもない残りの面積（都市計画区域外）が1㎡以上ある場合
+                    rem_area = site_area - (shigaika_area + chousei_area)
+                    if rem_area > 1.0:
+                        zones.append("都市計画区域外")
+                        
+                    # 該当する区域を画面・PDF上で綺麗に改行（<br>）して結合
+                    if zones:
+                        current_zone = "<br>".join(zones)
+                    else:
+                        current_zone = "都市計画区域外"
 
         # --- 用途地域・建蔽率・容積率判定 ---
         if gdf_use is not None:
@@ -674,8 +1052,10 @@ with col_center:
                             kinpei_str = f"{int(float(max_idx[1]))}%" if pd.notna(max_idx[1]) and str(max_idx[1]).strip() != "" else "指定なし"
                             youseki_str = f"{int(float(max_idx[2]))}%" if pd.notna(max_idx[2]) and str(max_idx[2]).strip() != "" else "指定なし"
                         else:
+                            # 99%未満（またがっている）場合の処理を変更
                             distinct_uses = inter_use["A29_005"].unique()
-                            use_choice = f"{', '.join(distinct_uses)}（混在）"
+                            # 「（混在）」を削除し、各用途地域を改行（<br>）で繋ぎます
+                            use_choice = "<br>".join(distinct_uses)
                             
                             k_list = [f"{int(float(k))}%" for k in inter_use["A29_006"].dropna().unique() if str(k).strip() != ""]
                             y_list = [f"{int(float(y))}%" for y in inter_use["A29_007"].dropna().unique() if str(y).strip() != ""]
@@ -721,27 +1101,61 @@ with col_center:
                 else: detailed_location = "静岡市（境界外）"
         else: detailed_location = "静岡市"
 
-        # --- 農地法判定 ---
+        # --- 🚜 農地法判定 ---
+        agri_point_status = "農地なし"  # 💡 初期値
         if gdf_agri is not None:
+            # 50mバッファ(search_poly)の範囲内に農地データがあるかインターセクション
             possible_agri = gdf_agri.iloc[list(gdf_agri.sindex.intersection(search_poly.bounds))]
+            
             if not possible_agri.empty:
-                if geom_type == "Point":
-                    agri_near = possible_agri.intersects(search_poly).any()
-                else:
-                    inter_agri = gpd.overlay(user_gdf, possible_agri, how='intersection')
-                    agri_area = sum([calculate_area_m2(g) for g in inter_agri.geometry]) if not inter_agri.empty else 0.0
+                # 50mバッファ（近傍判定用のポリゴン）に交差するか
+                hit_agri_near = possible_agri[possible_agri.intersects(search_poly)]
+                
+                if not hit_agri_near.empty:
+                    agri_point_status = "50m以内に農地"  # 一旦「50m以内」とする
+                    
+                    # クリック地点（Point）または ユーザーの描画ポリゴン（Polygon）そのものを取得
+                    target_geom = user_gdf.geometry.iloc[0]
+                    
+                    # 敷地（または指定地点）そのものに直撃しているレコードを抽出
+                    direct_hits = hit_agri_near[hit_agri_near.intersects(target_geom)]
+                    
+                    # 範囲指定（通常モード）で、重複面積が1.0㎡以下の微小な誤差は除外したい場合は
+                    # ここで面積判定を挟むことも可能ですが、今回は「一部分でも該当する場合」のためシンプルに判定します
+                    if not direct_hits.empty:
+                        agri_point_status = "農地あり"
 
-        # --- 森林法判定 ---
+        # --- 🌲 森林法判定 ---
+        forest_point_status = "森林なし"  # 💡 初期値
         if gdf_forest is not None:
+            # 50mバッファ(search_poly)の範囲内に森林データがあるかインターセクション
             possible_forest = gdf_forest.iloc[list(gdf_forest.sindex.intersection(search_poly.bounds))]
+            
             if not possible_forest.empty:
-                if geom_type == "Point":
-                    forest_near = possible_forest.intersects(search_poly).any()
-                else:
-                    inter_forest = gpd.overlay(user_gdf, possible_forest, how='intersection')
-                    forest_area = sum([calculate_area_m2(g) for g in inter_forest.geometry]) if not inter_forest.empty else 0.0
+                # 50mバッファ（近傍判定用のポリゴン）に交差するか
+                hit_forest_near = possible_forest[possible_forest.intersects(search_poly)]
+                
+                if not hit_forest_near.empty:
+                    forest_point_status = "50m以内に森林"  # 一旦「50m以内」とする
+                    
+                    # 敷地（または指定地点）そのもののジオメトリ
+                    target_geom = user_gdf.geometry.iloc[0]
+                    
+                    # 敷地そのものに直撃しているレコードを抽出
+                    direct_hits = hit_forest_near[hit_forest_near.intersects(target_geom)]
+                    
+                    if not direct_hits.empty:
+                        forest_point_status = "森林あり"
 
-        # --- 🛠️ 河川情報（ピン・ポリゴン両対応に強化） ---
+        # --- 🏞️ 河川距離判定 ---
+        river_dist_status = "1km以内に主要河川なし"  # 💡 初期値
+        
+        # 互換性のために残す（古いPDF機能等で参照されている場合用）
+        has_river_dist = False
+        nearest_river_name = "名称不明の河川"
+        nearest_river_class = "準用・普通河川等"
+        nearest_river_dist = 0
+
         if gdf_river is not None:
             user_gdf_m = user_gdf.to_crs(epsg=6676)
             gdf_river_m = gdf_river.to_crs(epsg=6676)
@@ -756,16 +1170,25 @@ with col_center:
                     min_idx = distances.idxmin()
                     nearest_river_dist = shortest_dist
                     has_river_dist = True
+                    
                     r_name = possible_river.loc[min_idx, 'W05_004']
                     nearest_river_name = r_name if pd.notna(r_name) else "名称不明の河川"
+                    
                     r_class = possible_river.loc[min_idx, 'W05_003']
                     nearest_river_class = "一級河川" if str(r_class).strip() in ['1','2','5','6'] else "二級河川" if str(r_class).strip() in ['3','7'] else "準用・普通河川等"
-                else:
-                    has_river_dist = False
-            else:
-                has_river_dist = False
+                    
+                    # 💡 【新規】10m単位に四捨五入した距離を作成
+                    rounded_dist = int(round(nearest_river_dist, -1))
+                    
+                    # 💡 【新規】1行で右寄せ表示するためのステータス文言をここで組み立てる
+                    river_dist_status = f"{nearest_river_class} {nearest_river_name}まで 約 {rounded_dist:,}m"
 
-        # --- 洪水浸水想定 ---
+        # --- 🌊 洪水浸水想定区域判定 ---
+        flood_hit = False
+        flood_river_name = ""
+        flood_rank_code = ""
+        flood_desc = ""
+
         if gdf_flood is not None:
             possible_flood = gdf_flood.iloc[list(gdf_flood.sindex.intersection(user_geom.bounds))]
             if not possible_flood.empty:
@@ -780,43 +1203,130 @@ with col_center:
                     max_row = match_flood.loc[match_flood['A31a_205_num'].idxmax()]
                     flood_river_name = max_row.get('A31a_202', '名称未定の河川')
                     flood_rank_code = str(max_row.get('A31a_205', ''))
+                    
+                    # 元のマスタ辞書
                     rank_desc = {"1":"0.5m未満", "2":"0.5m〜3.0m未満", "3":"3.0m〜5.0m未満", "4":"5.0m〜10.0m未満", "5":"10.0m〜20.0m未満", "6":"20.0m以上"}
                     flood_desc = rank_desc.get(flood_rank_code, "（要窓口確認）")
 
-        # --- 土砂災害警戒区域判定 ---
+        # 💡 【他項目と揃える統合処理】
+        # 不要な「未満」を消去し、他と100%整合性を保つ flood_status 変数を作る
+        if flood_hit and flood_desc:
+            flood_status = str(flood_desc).replace("未満", "").strip()
+        else:
+            flood_status = "区域外"
+
+        # --- 土砂災害警戒区域判定（新5段階判定版） ---
+        dosha_point_status = "区域外"  # 初期値
+        dosha_near = False          # 互換性維持
+        dosha_hit = False           # 互換性維持
+        dosha_yellow_area = 0.0     
+        dosha_red_area = 0.0        
+
         if gdf_dosha is not None:
+            # 💡 共通の50m拡大枠(search_poly)に交差するデータを抽出
             possible_dosha = gdf_dosha.iloc[list(gdf_dosha.sindex.intersection(search_poly.bounds))]
+            
             if not possible_dosha.empty:
-                if geom_type == "Point":
-                    dosha_near = possible_dosha.intersects(search_poly).any()
-                else:
-                    inter_dosha = gpd.overlay(user_gdf, possible_dosha, how='intersection')
-                    if not inter_dosha.empty:
+                # 50mバッファの中に土砂災害区域が存在するか
+                hit_dosha_near = possible_dosha[possible_dosha.intersects(search_poly)].copy()
+                
+                if not hit_dosha_near.empty:
+                    # 文字列のトリムと正規化をここで一括で行っておく
+                    hit_dosha_near['A33_002_str'] = hit_dosha_near['A33_002'].astype(str).str.strip()
+                    
+                    dosha_near = True  # 何かしら50m以内にある
+                    target_geom = user_gdf.geometry.iloc[0]
+                    
+                    # 生の敷地そのものに直接ヒットしているレコードを抽出
+                    direct_hits = hit_dosha_near[hit_dosha_near.intersects(target_geom)].copy()
+                    
+                    if not direct_hits.empty:
                         dosha_hit = True
-                        inter_dosha['calc_area'] = inter_dosha.geometry.map(calculate_area_m2)
-                        inter_dosha['A33_002_str'] = inter_dosha['A33_002'].astype(str).str.strip()
-                        dosha_yellow_area = inter_dosha[inter_dosha['A33_002_str'] == '1']['calc_area'].sum()
-                        dosha_red_area = inter_dosha[inter_dosha['A33_002_str'] == '2']['calc_area'].sum()
+                        
+                        # ① レッドに該当する場合
+                        if (direct_hits['A33_002_str'] == '2').any():
+                            dosha_point_status = "レッド"
+                        
+                        # イエロー直撃時の判定
+                        elif (direct_hits['A33_002_str'] == '1').any():
+                            # ② イエローに該当し、かつ50m以内にレッドが存在する場合
+                            if (hit_dosha_near['A33_002_str'] == '2').any():
+                                dosha_point_status = "イエロー、50m以内にレッド"
+                            # ③ イエローにのみ該当する場合（50m以内にもレッドが一切ない）
+                            else:
+                                dosha_point_status = "イエロー"
+                        
+                        # 🗺️ ポリゴンモードの時だけ、PDFの面積計算用に値を残す処理
+                        if geom_type != "Point":
+                            inter_dosha = gpd.overlay(user_gdf, direct_hits, how='intersection')
+                            if not inter_dosha.empty:
+                                inter_dosha['calc_area'] = inter_dosha.geometry.map(calculate_area_m2)
+                                inter_dosha['A33_002_str'] = inter_dosha['A33_002'].astype(str).str.strip()
+                                dosha_yellow_area = inter_dosha[inter_dosha['A33_002_str'] == '1']['calc_area'].sum()
+                                dosha_red_area = inter_dosha[inter_dosha['A33_002_str'] == '2']['calc_area'].sum()
+                    
+                    else:
+                        # 敷地直撃はないが、50m以内（近傍）のケース
+                        # ④ いずれにも該当しないかつイエローから50m以内の場合（※レッドが50m以内にあれば優先）
+                        if (hit_dosha_near['A33_002_str'] == '2').any():
+                            dosha_point_status = "50m以内にレッド"  # 厳密な条件網羅のため追加
+                        elif (hit_dosha_near['A33_002_str'] == '1').any():
+                            dosha_point_status = "50m以内にイエロー"
+                        else:
+                            # ⑤ いずれにも該当せず50mより遠い場合
+                            dosha_point_status = "区域外"
 
-        # 🚧 都市計画道路の空間判定ロジック（新規追加）
+        # --- 🛣️ 都市計画道路判定 ---
+        road_point_status = "計画なし"  # 💡 初期値
+        
         if gdf_road is not None:
-            possible_road = gdf_road.iloc[list(gdf_road.sindex.intersection(search_poly.bounds))]
-            if not possible_road.empty:
-                if geom_type == "Point":
-                    road_near = possible_road.intersects(search_poly).any()
-                else:
-                    inter_road = gpd.overlay(user_gdf, possible_road, how='intersection')
-                    road_area = sum([calculate_area_m2(g) for g in inter_road.geometry]) if not inter_road.empty else 0.0
+            # 💡 都市計画道路専用に「10mバッファ」をその場で生成する
+            user_gdf_m = user_gdf.to_crs(epsg=6676)
+            road_buffer_geom_m = user_gdf_m.geometry.iloc[0].buffer(10.0) # 10mバッファ
+            road_buffer_gdf = gpd.GeoDataFrame(geometry=[road_buffer_geom_m], crs="EPSG:6676")
+            road_buffer_gdf_4326 = road_buffer_gdf.to_crs(epsg=4326)
+            road_search_poly = road_buffer_gdf_4326.geometry.iloc[0]
 
-        # 🏺 埋蔵文化財包蔵地の空間判定ロジック（新規追加）
+            # 10mバッファの範囲内にあるデータを抽出
+            possible_road = gdf_road.iloc[list(gdf_road.sindex.intersection(road_search_poly.bounds))]
+            
+            if not possible_road.empty:
+                # 10m以内に都市計画道路が存在するか
+                hit_road_near = possible_road[possible_road.intersects(road_search_poly)]
+                
+                if not hit_road_near.empty:
+                    road_point_status = "10m以内に計画あり"  # 一旦「10m以内」とする
+                    
+                    # 生の敷地（点またはポリゴン）そのものを取得
+                    target_geom = user_gdf.geometry.iloc[0]
+                    
+                    # 敷地そのものに直撃しているレコードを抽出
+                    direct_hits = hit_road_near[hit_road_near.intersects(target_geom)]
+                    
+                    if not direct_hits.empty:
+                        road_point_status = "計画あり"
+
+        # --- 🏺 埋蔵文化財判定 ---
+        cultural_point_status = "遺跡なし"  # 💡 初期値
         if gdf_cultural is not None:
+            # 50mバッファ(search_poly)の範囲内に埋蔵文化財データがあるかインターセクション
             possible_cultural = gdf_cultural.iloc[list(gdf_cultural.sindex.intersection(search_poly.bounds))]
+            
             if not possible_cultural.empty:
-                if geom_type == "Point":
-                    cultural_near = possible_cultural.intersects(search_poly).any()
-                else:
-                    inter_cultural = gpd.overlay(user_gdf, possible_cultural, how='intersection')
-                    cultural_area = sum([calculate_area_m2(g) for g in inter_cultural.geometry]) if not inter_cultural.empty else 0.0
+                # 50mバッファ（近傍判定用のポリゴン）に交差するか
+                hit_cultural_near = possible_cultural[possible_cultural.intersects(search_poly)]
+                
+                if not hit_cultural_near.empty:
+                    cultural_point_status = "50m以内に遺跡"  # 一旦「50m以内」とする
+                    
+                    # 敷地（または指定地点）そのもののジオメトリ
+                    target_geom = user_gdf.geometry.iloc[0]
+                    
+                    # 敷地そのものに直撃しているレコードを抽出
+                    direct_hits = hit_cultural_near[hit_cultural_near.intersects(target_geom)]
+                    
+                    if not direct_hits.empty:
+                        cultural_point_status = "遺跡あり"
 
         # --- 用途地域判定 ---
         if gdf_use is not None:
@@ -830,7 +1340,13 @@ with col_center:
                     if not inter_use.empty:
                         inter_use["calc_area"] = [calculate_area_m2(g) for g in inter_use.geometry]
                         area_summary = inter_use.groupby("A29_005")["calc_area"].sum()
-                        use_choice = area_summary.idxmax() if area_summary.max() >= site_area * 0.99 else f"{', '.join(area_summary.index)}（混在）"
+                        
+                        # 99%以上の場合は単一の用途地域として判定
+                        if area_summary.max() >= site_area * 0.99:
+                            use_choice = area_summary.idxmax()
+                        else:
+                            # 99%未満（またがっている）場合の処理を変更：「（混在）」を削除し改行（<br>）で繋ぐ
+                            use_choice = "<br>".join(area_summary.index)
                     else: use_choice = "指定なし"
 
     use_district = "others"
@@ -842,27 +1358,174 @@ with col_center:
         is_dev_required = (site_area >= dev_limit) or (current_zone == "市街化調整区域" and selected_purpose is not None and selected_purpose["cat"] in ["building", "spec_1"])
         morido_required = morido_area > 500 or kiri_height > 2.0 or mori_height > 1.0 or ((kiri_height + mori_height) > 2.0 and kiri_height > 0 and mori_height > 0)
         
-        vol_min, vol_max, max_basis, max_green = 0.0, 0.0, "免除", 0.0
+        # --- 🌳 緑地 判定ロジック（緑地専用・UI文言完全同期版） ---
+        max_basis, max_green = "不要", 0.0
+        
         if geom_type != "Point":
-            vol_min, vol_max = (site_area * 0.11, site_area * 0.13) if is_tomoe else (site_area * 0.06, site_area * 0.08)
-            green_reqs = {"静岡市みどり条例（敷地面積の5%）": site_area * 0.05}
+            # 💡 辞書のキーをご指定のUI表記「5%, 市みどり条例」に修正
+            green_reqs = {"5%, 市みどり条例": site_area * 0.05}
+            
+            # 工場立地法の判定
             if selected_purpose is not None and selected_purpose["is_factory_law"] and (site_area >= 9000 or building_area >= 3000):
                 r_green = 0.05 if use_district == "industrial" else 0.10 if use_district == "quasi_industrial" else 0.20
-                green_reqs["工場立地法"] = site_area * r_green
+                
+                # 用途地域に応じた動的な根拠ラベル（例: 20%+5%, 工場立地法）
+                basis_label = f"{int(r_green*100)}%+5%, 工場立地法"
+                green_reqs[basis_label] = site_area * r_green
+            
+            # 最も厳しい（面積が大きい）基準を抽出
             max_basis = max(green_reqs, key=green_reqs.get)
             max_green = green_reqs[max_basis]
 
+        # --- 📐 調整池概算容量計算（変数名同期・不要時ガード版） ---
+        # 💡 report_data でエラーを出さないよう、最初に行の先頭で初期値を定義しておきます
+        vol_min, vol_max = 0.0, 0.0
+        
+        if site_area < 1000.0:
+            pond_volume_str = "不要"
+        else:
+            # 1. 面積を㎡からhaに換算 (A1)
+            A1 = site_area / 10000.0
+            
+            # 2. 面積に応じてαを判定
+            alpha = 2 if A1 >= 2.0 else 1
+            
+            # 3. 各種固定変数の定義
+            ri = 122
+            f1 = 0.9
+            rc = 28
+            f2 = 0.6
+            t1 = 30
+            
+            # 4. 通常の容量計算式の実行（基本の容量）
+            pond_volume_base = ( (ri * f1) - ((rc / 2) * f2) ) * alpha * t1 * 60 * A1 * (1 / 360)
+            
+            import math
+            
+            # 5. 巴川流域（is_tomoe が True）の場合の処理
+            if is_tomoe:
+                # 面積（A1）に応じて係数（factor）を自動計算（0.1haで1.1 〜 1.5haで1.3 の直線補間）
+                if A1 <= 0.1:
+                    factor = 1.1
+                elif A1 >= 1.5:
+                    factor = 1.3
+                else:
+                    factor = 1.1 + ((A1 - 0.1) * (0.2 / 1.4))
+                
+                # 💡 変数名を v_min / v_max から vol_min / vol_max に変更し、辞書側と同期させます
+                vol_min = math.ceil(pond_volume_base / 10) * 10
+                vol_max = math.ceil((pond_volume_base * factor) / 10) * 10
+                
+                # 「通常値 〜 上限値」の幅を持たせた文字列にする
+                pond_volume_str = f"{vol_min:,} ～ {vol_max:,}㎥"
+                
+            else:
+                # 通常の場合（今まで通り単一の10の倍数切り上げ）
+                pond_volume_rounded = math.ceil(pond_volume_base / 10) * 10
+                pond_volume_str = f"{pond_volume_rounded:,}㎥"
+                
+                # 通常エリアの場合も、辞書用に値をセットしておく（必要に応じて流用可能）
+                vol_min = pond_volume_rounded
+                vol_max = pond_volume_rounded
+
+        # --- 🌳 緩衝帯判定 ---
+        buffer_zone_status = "不要"  # 初期値
+        
+        # 💡 is_point_modeの代わりに geom_type を直接見て判定します
+        area_ha = site_area / 10000.0 if geom_type != "Point" else 0.0
+
+        if area_ha < 1.0:
+            buffer_zone_status = "不要"
+        elif 1.0 <= area_ha < 1.5:
+            buffer_zone_status = "4m以上"
+        elif 1.5 <= area_ha < 5.0:
+            buffer_zone_status = "5m以上"
+        elif 5.0 <= area_ha < 15.0:
+            buffer_zone_status = "10m以上"
+        elif 15.0 <= area_ha < 25.0:
+            buffer_zone_status = "15m以上"
+        else:  # 25.0ha <= area_ha
+            buffer_zone_status = "20m以上"
+
+        center_lon = user_geom.centroid.x if 'user_geom' in locals() else None
+        center_lat = user_geom.centroid.y if 'user_geom' in locals() else None
+
         report_data = {
-            "input_mode": input_mode, "geom_type": geom_type, "loc_label": detailed_location, "site_area": site_area, "current_zone": current_zone, "target_use_name": use_choice, "kinpei_str": kinpei_str, "youseki_str": youseki_str,
-            "is_dev_required": is_dev_required, "agri_area": agri_area, "agri_near": agri_near, "check_morido": check_morido, "morido_required": morido_required, 
-            "forest_area": forest_area, "forest_near": forest_near, "is_tomoe": is_tomoe, "vol_min": vol_min, "vol_max": vol_max, "purpose_none": (selected_purpose is None), 
-            "max_basis": max_basis, "max_green": max_green, "gdf_flood_none": (gdf_flood is None), "flood_hit": flood_hit, "flood_river_name": flood_river_name, 
-            "flood_rank_code": flood_rank_code, "flood_desc": flood_desc, "has_river_dist": has_river_dist, "nearest_river_name": nearest_river_name, 
-            "nearest_river_class": nearest_river_class, "nearest_river_dist": nearest_river_dist, "gdf_dosha_none": (gdf_dosha is None), "dosha_hit": dosha_hit, 
-            "dosha_red_area": dosha_red_area, "dosha_yellow_area": dosha_yellow_area, "dosha_near": dosha_near,
-            "road_area": road_area, "road_near": road_near,
-            "cultural_area": cultural_area, "cultural_near": cultural_near,
+            # --- 📋 1. 基本情報 ---
+            "input_mode": input_mode,
+            "geom_type": geom_type,
+            "center_lat": center_lat,
+            "center_lon": center_lon,
+            "loc_label": detailed_location,
+            "site_area": site_area,
+            "current_zone": current_zone,
+            "target_use_name": use_choice,
+            "kinpei_str": kinpei_str,
+            "youseki_str": youseki_str,
+
+            # --- 🛠️ 2. 各種判定ステータス（UI表示用）---
+            "is_dev_required": is_dev_required,        # 開発許可
+            "pond_volume_str": pond_volume_str,        # 調整池
+            "agri_point_status": agri_point_status,    # 農地法
+            "forest_point_status": forest_point_status,# 森林法
+            "dosha_point_status": dosha_point_status,  # 土砂災害
+            "road_point_status": road_point_status,    # 都市計画道路
+            "cultural_point_status": cultural_point_status, # 埋蔵文化財
+            "buffer_zone_status": buffer_zone_status,  # 緩衝帯
+            "flood_status": flood_status,              # 洪水浸水想定
+            "river_dist_status": river_dist_status,    # 河川距離
+
+            # --- ⚠️ 3. 特殊・その他（データ不足時のキャプション用など）---
+            "gdf_dosha_none": (gdf_dosha is None),     # データ未読込時の警告用
+            "check_morido": check_morido,              # 盛土
+            "morido_required": morido_required,        # 盛土
+            
+            # --- 🗺️ 4. 巴川（Place Name Master / 面積率等でまだ裏で使う場合）---
+            # ※もし巴川周辺の計算UI等で完全に使わなくなっていれば、後からさらに削れます
+            "is_tomoe": is_tomoe,
+            "vol_min": vol_min,
+            "vol_max": vol_max,
+            "purpose_none": (selected_purpose is None),
+            "max_basis": max_basis,
+            "max_green": max_green,
+
+            # --- 📄 5. PDF出力用バックアップ ---
+            # ※もしPDF出力側で直撃面積などを参照している場合は残しておく必要があります
+            "dosha_red_area": dosha_red_area,
+            "dosha_yellow_area": dosha_yellow_area,
         }
+
+        # === ✨【修正版】建蔽率と容積率をいかなる場合も必ずペアで結合する処理 ===
+        k_list = [x.strip() for x in report_data.get('kinpei_str', '').split(',') if x.strip()]
+        y_list = [x.strip() for x in report_data.get('youseki_str', '').split(',') if x.strip()]
+
+        if k_list and y_list:
+            # 片方の数値が同じで省略されてリスト数が合わない場合の補正
+            if len(y_list) == 1 and len(k_list) > 1:
+                y_list = y_list * len(k_list)
+            elif len(k_list) == 1 and len(y_list) > 1:
+                k_list = k_list * len(y_list)
+                
+            spec_pairs = []
+            for k, y in zip(k_list, y_list):
+                # すでに「%」や「指定なし」が入っているかチェックしながら整形
+                k_val = k if "%" in k or k == "指定なし" else f"{k}%"
+                y_val = y if "%" in y or y == "指定なし" else f"{y}%"
+                
+                # 両方とも「指定なし」なら「指定なし」だけにする
+                if k_val == "指定なし" and y_val == "指定なし":
+                    spec_pairs.append("指定なし")
+                else:
+                    spec_pairs.append(f"{k_val} / {y_val}")
+            
+            # 重複があれば一意にしてカンマで繋ぐ（例: 都市計画区域外で「指定なし」が重複した時などの対策）
+            # リストの順序を維持したまま重複を排除します
+            seen = set()
+            unique_pairs = [x for x in spec_pairs if not (x in seen or seen.add(x))]
+            report_data['combined_spec_str'] = ", ".join(unique_pairs)
+        else:
+            report_data['combined_spec_str'] = '―'
+            report_data['combined_spec_str'] = '―'
 
     with col_btn:
         if has_data:
