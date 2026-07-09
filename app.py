@@ -101,9 +101,103 @@ def calculate_area_m2(geom):
 def generate_pdf(report_data):
     import io
     from xhtml2pdf import pisa
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    import os
 
     # ====================================================
-    # 🛡️ 0. 基本情報の取得と完全な文字列化（None漏れ徹底ガード）
+    # 🎨 0-1. セル自動色分け用の内部関数（項目別カスタム版・確定対応）
+    # ====================================================
+    def get_custom_color(label_name, status_text):
+        if not status_text:
+            return "#ffffff"
+        
+        # 🟢 【一律緑】周辺の道路
+        if label_name == "周辺の道路":
+            return "#c8e6c9" # 薄い緑
+            
+        # 🔵 【一律青】周辺の河川
+        if label_name == "周辺の河川":
+            return "#bbdefb" # 薄い青
+            
+        # 🟠 【必要な時（面積）はオレンジ、不要なら無色】緑地
+        if label_name == "緑地":
+            if "不要" in status_text:
+                return "#ffffff" # 不要のときは無色（白）
+            return "#ffe0b2" # 薄いオレンジ
+            
+        # 🟠 【指定の幅、または「必要」のときはオレンジ、不要なら無色】緩衝帯
+        if label_name == "緩衝帯":
+            if any(k in status_text for k in ["必要", "m以上"]):
+                return "#ffe0b2" # 薄いオレンジ
+            return "#ffffff" # 不要・― などの時は無色（白）
+            
+        # 🔵 【必要なら青、不要なら無色】調整池
+        if label_name == "調整池":
+            if "不要" in status_text or status_text in ["免除", "―"]:
+                return "#ffffff" # 無色
+            return "#bbdefb" # 薄い青
+
+        # 🔴🟢 【緑か赤】洪水浸水想定区域
+        if label_name == "洪水浸水想定区域":
+            if "区域外" in status_text or "なし" in status_text:
+                return "#c8e6c9" # 薄い緑
+            return "#ffcdd2" # 薄い赤
+
+        # 🔴🟡🟢 【5段階判定を3色に集約】土砂災害警戒区域
+        if label_name == "土砂災害警戒区域":
+            if status_text == "レッド":
+                return "#ffcdd2" # 薄い赤（完全なレッド区域のみ）
+            elif any(k in status_text for k in ["イエロー", "50m以内"]):
+                return "#fff9c4" # 薄い黄（混在パターンや50m以内を網羅）
+            elif "区域外" in status_text:
+                return "#c8e6c9" # 薄い緑
+            return "#ffffff"
+
+        # 🟡 【最優先チェック】農地法・埋蔵文化財・森林法で「50m以内」なら無条件で黄色！
+        if label_name in ["農地法", "埋蔵文化財", "森林法"]:
+            if "50m以内" in status_text:
+                return "#fff9c4" # 薄い黄
+
+        # 🔴🟡🟢 【各項目ごとの個別文字判定】
+        if label_name == "農地法":
+            if "農地あり" in status_text: return "#ffcdd2" # 薄い赤
+            if "農地なし" in status_text: return "#c8e6c9" # 薄い緑
+            
+        if label_name == "埋蔵文化財":
+            if "遺跡あり" in status_text: return "#ffcdd2" # 薄い赤
+            if "遺跡なし" in status_text: return "#c8e6c9" # 薄い緑
+
+        if label_name == "森林法":
+            if "森林あり" in status_text: return "#ffcdd2" # 薄い赤
+            if "森林なし" in status_text: return "#c8e6c9" # 薄い緑
+
+        # 🔴🟡🟢 【その他の基本法令】開発許可、都市計画道路
+        if any(k in status_text for k in ["必要", "制限", "レッド", "危険", "区域内"]):
+            return "#ffcdd2" # 薄い赤
+        elif any(k in status_text for k in ["注意", "確認", "イエロー", "要相談", "協議"]):
+            return "#fff9c4" # 薄い黄
+        elif any(k in status_text for k in ["不要", "許可不要", "免除", "該当なし", "区域外", "なし"]):
+            return "#c8e6c9" # 薄い緑
+            
+        return "#ffffff"
+
+    # 💡 コピーした .ttc ファイルのパス
+    font_ttc_path = os.path.join(".", "fonts", "YuGothB.ttc") # 実際のファイル名に合わせてください
+
+    if os.path.exists(font_ttc_path):
+        try:
+            # index=0 を指定して .ttc から游ゴシックの標準体を直接読み込む
+            pdfmetrics.registerFont(TTFont('YuGothic', font_ttc_path, index=0))
+            target_font = "YuGothic"
+        except Exception as e:
+            # 万が一 ReportLabのバージョンが古くてエラーになった場合のセーフティ
+            target_font = "HeiseiKakuGo-W5"
+    else:
+        target_font = "HeiseiKakuGo-W5"
+
+    # ====================================================
+    # 🛡️ 0-2. 基本情報の取得と完全な文字列化（None漏れ徹底ガード）
     # ====================================================
     is_point_mode = report_data.get("geom_type") == "Point"
     
@@ -220,28 +314,43 @@ def generate_pdf(report_data):
         if bz_status is None: bz_status = "不要"
 
     # ====================================================
-    # 🎨 4. HTML組み立て（最新の並び順・盛土削除・緩衝帯追加版）
+    # 🎨 4. HTML組み立て（すべての見出し・セルへの自動色分け連動版）
     # ====================================================
     html_content = f"""
     <html>
     <head>
         <meta charset="utf-8">
-        <style>
-            @page {{ size: a4; margin: 1.5cm; }}
-            body {{ font-family: "HeiseiMin-W3", serif; color: #121212; font-size: 10pt; line-height: 1.6; }}
+            <style>
+            @page {{ size: a4; margin: 0.8cm; }}
+            body {{ 
+                font-family: "{target_font}", sans-serif; 
+                color: #121212; 
+                font-size: 10.5pt; 
+                line-height: 1.4; 
+            }}
             .header {{ border-bottom: 2px solid #003366; padding-bottom: 8px; margin-bottom: 20px; }}
             .title {{ font-size: 18pt; font-weight: bold; color: #003366; }}
             
             table.meta-table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
             table.meta-table td {{ padding: 8px 12px; border: 1px solid #555555; vertical-align: middle; }}
-            .meta-label {{ color: #121212; font-weight: bold; font-size: 9pt; width: 25%; background-color: #f8f9fa; }}
+            /* 💡 背景色を #d1d1d1 にし、絵文字が消えた文字をド真ん中に配置します */
+            table.meta-table .meta-label {{ 
+                color: #121212; 
+                font-weight: bold; 
+                font-size: 11pt; 
+                width: 25%; 
+                background-color: #d1d1d1; 
+                text-align: center !important; 
+                vertical-align: middle; 
+                padding: 8px 0px !important; 
+            }}
             
             table.main-table {{ width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 15px; }}
             table.main-table th, table.main-table td {{ border: 1px solid #555555; font-size: 9.5pt; vertical-align: middle; }}
             
             /* 見出し(th)：上下左右すべて中央揃え */
             table.main-table th {{ 
-                background-color: #f2f2f2; width: 20%; font-weight: bold; text-align: center;
+                font-weight: bold; text-align: center;
                 padding: 15px 10px; /* 最小高さを確保 */
             }}
             
@@ -257,37 +366,55 @@ def generate_pdf(report_data):
         <div class="header"><div class="title">開発行為 判定結果レポート</div></div>
 
         <table class="meta-table">
-            <tr><td class="meta-label">📍 敷地所在</td><td><strong>{loc_label}</strong></td></tr>
-            <tr><td class="meta-label">📐 敷地面積</td><td><strong>{area_text}</strong></td></tr>
-            <tr><td class="meta-label">🌐 区域区分</td><td><strong>{current_zone}</strong></td></tr>
-            <tr><td class="meta-label">🏢 用途地域</td><td><strong>{target_use_name}</strong></td></tr>
-            <tr><td class="meta-label">📐 建蔽率 / 容積率</td><td><strong>{combined_spec_str}</strong></td></tr>
+            <tr><td class="meta-label">敷地所在</td><td><strong>{loc_label}</strong></td></tr>
+            <tr><td class="meta-label">敷地面積</td><td><strong>{area_text}</strong></td></tr>
+            <tr><td class="meta-label">区域区分</td><td><strong>{current_zone}</strong></td></tr>
+            <tr><td class="meta-label">用途地域</td><td><strong>{target_use_name}</strong></td></tr>
+            <tr><td class="meta-label">建蔽率/容積率</td><td><strong>{combined_spec_str}</strong></td></tr>
         </table>
 
         <table class="main-table">
             <tr>
-                <th>開発許可</th><td>{toshi_status}</td>
-                <th>緑地</th><td>{green_display}</td>
+                <th style="background-color: {get_custom_color('開発許可', toshi_status)};">開発許可</th>
+                <td style="background-color: {get_custom_color('開発許可', toshi_status)};">{toshi_status}</td>
+                
+                <th style="background-color: {get_custom_color('緑地', green_display)};">緑地</th>
+                <td style="background-color: {get_custom_color('緑地', green_display)};">{green_display}</td>
             </tr>
             <tr>
-                <th>土砂災害警戒区域</th><td>{dosha_status}</td>
-                <th>緩衝帯</th><td>{bz_status}</td>
+                <th style="background-color: {get_custom_color('土砂災害警戒区域', dosha_status)};">土砂災害警戒区域</th>
+                <td style="background-color: {get_custom_color('土砂災害警戒区域', dosha_status)};">{dosha_status}</td>
+                
+                <th style="background-color: {get_custom_color('緩衝帯', bz_status)};">緩衝帯</th>
+                <td style="background-color: {get_custom_color('緩衝帯', bz_status)};">{bz_status}</td>
             </tr>
             <tr>
-                <th>農地法</th><td>{agri_status}</td>
-                <th>調整池</th><td>{pond_display}</td>
+                <th style="background-color: {get_custom_color('農地法', agri_status)};">農地法</th>
+                <td style="background-color: {get_custom_color('農地法', agri_status)};">{agri_status}</td>
+                
+                <th style="background-color: {get_custom_color('調整池', pond_display)};">調整池</th>
+                <td style="background-color: {get_custom_color('調整池', pond_display)};">{pond_display}</td>
             </tr>
             <tr>
-                <th>洪水浸水想定区域</th><td>{flood_status}</td>
-                <th>周辺の河川</th><td>{river_status}</td>
+                <th style="background-color: {get_custom_color('洪水浸水想定区域', flood_status)};">洪水浸水想定区域</th>
+                <td style="background-color: {get_custom_color('洪水浸水想定区域', flood_status)};">{flood_status}</td>
+                
+                <th style="background-color: {get_custom_color('周辺の河川', river_status)};">周辺の河川</th>
+                <td style="background-color: {get_custom_color('周辺の河川', river_status)};">{river_status}</td>
             </tr>
             <tr>
-                <th>埋蔵文化財</th><td>{cultural_status}</td>
-                <th>周辺の道路</th><td>{road_display}</td>
+                <th style="background-color: {get_custom_color('埋蔵文化財', cultural_status)};">埋蔵文化財</th>
+                <td style="background-color: {get_custom_color('埋蔵文化財', cultural_status)};">{cultural_status}</td>
+                
+                <th style="background-color: {get_custom_color('周辺の道路', road_display)};">周辺の道路</th>
+                <td style="background-color: {get_custom_color('周辺の道路', road_display)};">{road_display}</td>
             </tr>
             <tr>
-                <th>森林法</th><td>{forest_status}</td>
-                <th>都市計画道路</th><td>{road_status}</td>
+                <th style="background-color: {get_custom_color('森林法', forest_status)};">森林法</th>
+                <td style="background-color: {get_custom_color('森林法', forest_status)};">{forest_status}</td>
+                
+                <th style="background-color: {get_custom_color('都市計画道路', road_status)};">都市計画道路</th>
+                <td style="background-color: {get_custom_color('都市計画道路', road_status)};">{road_status}</td>
             </tr>
         </table>
 
@@ -377,7 +504,7 @@ def show_result_dialog(report_data):
     try:
         pdf_data = generate_pdf(report_data)
         st.download_button(
-            label="📄 判定結果レポートをPDFでダウンロード (A4印刷向き)",
+            label="📄 判定結果レポートをPDFでダウンロード ",
             data=pdf_data,
             file_name=f"開発要件判定レポート_{loc_label.replace(', ', '_')}.pdf",
             mime="application/pdf",
