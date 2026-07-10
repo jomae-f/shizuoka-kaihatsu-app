@@ -661,7 +661,7 @@ with col_center:
         ])
 
     folium.TileLayer(tiles='https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', attr='国土地理院', name='国土地理院 航空写真', max_zoom=18).add_to(m)
-    folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', attr='Google', name='Google Map', max_zoom=20).add_to(m)
+    folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', attr='Google', name='Google Map', max_zoom=21).add_to(m)
     folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google', name='Google 航空写真', max_zoom=21).add_to(m)
 
     from folium.plugins import Draw
