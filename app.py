@@ -15,6 +15,11 @@ from xhtml2pdf import pisa
 st.set_page_config(layout="wide")
 st.title("静岡市開発行為 要件判定システム")
 
+if "center_lat" not in st.session_state:
+    st.session_state.center_lat = 34.975562
+if "center_lon" not in st.session_state:
+    st.session_state.center_lon = 138.382758
+
 # ----------------------------------------------------
 # GISデータの読み込み（高速Feather版）
 # ----------------------------------------------------
@@ -69,10 +74,8 @@ def load_town_master():
         if not isinstance(kana, str) or not kana: return "その他"
         for group, chars in kana_map.items():
             if kana[0] in chars: return f"{group}行"
-        return "undefined"  # システム挙動完全維持：「その他」ではなく元の暗黙の挙動に基づく
+        return "undefined"  
         
-    # ※元のコードは最後のreturn "その他"に到達せず、直前で該当しないものは暗黙的な処理になっていた
-    # システム挙動（バグ互換含む）をそのまま引き継ぐため、元の分類ロジックの判定文字を確実に維持
     def get_kana_group_strict(kana):
         if not isinstance(kana, str) or len(kana) == 0: return "その他"
         c = kana[0]
@@ -90,6 +93,25 @@ def load_town_master():
 
     df["50音分類"] = df["ふりがな"].apply(get_kana_group_strict)
     return df
+
+
+def on_town_change():
+    """手入力で町名が変更されたときに、地図の中心座標を自動更新するコールバック"""
+    if "selected_town_name" in st.session_state and st.session_state.selected_town_name:
+        town_name = st.session_state.selected_town_name
+        try:
+            town_data = gdf_towns[gdf_towns["S_NAME"] == town_name]
+            
+            if not town_data.empty:
+                centroid = town_data.iloc[0].geometry.centroid
+                st.session_state.center_lat = float(centroid.y)
+                st.session_state.center_lon = float(centroid.x)
+                
+                st.toast(f"📍 {town_name} へジャンプしました！")
+            else:
+                st.toast(f"⚠️ 空間データの S_NAME に『{town_name}』が見つかりませんでした。")
+        except Exception as e:
+            st.toast(f"❌ 座標取得エラー: {e}")
 
 # データの初期ロード実行
 gdf_towns, gdf_shigaika, gdf_chousei, gdf_use, gdf_dosha, gdf_agri, gdf_flood, gdf_cultural, gdf_forest, gdf_tomoe, gdf_river, gdf_road = load_spatial_files()
@@ -160,6 +182,19 @@ def generate_pdf(report_data):
     current_zone = report_data.get('current_zone') or '―'
     target_use_name = report_data.get('target_use_name') or '―'
     combined_spec_str = report_data.get('combined_spec_str') or '―'
+
+    if input_mode == "✍️ 手入力":
+        if "市街化区域" in str(current_zone):
+            combined_spec_str = "―"
+        elif "市街化調整区域" in str(current_zone):
+            target_use_name = "指定なし"
+            combined_spec_str = "60% / 200%"
+        elif "都市計画区域外" in str(current_zone):
+            target_use_name = "指定なし"
+            combined_spec_str = "指定なし"
+        else:
+            target_use_name = "―"
+            combined_spec_str = "―"
     
     # 3. 主要法令に基づく手続要件のデータ成形
     toshi_status = "―" if is_point_mode else ("必要" if report_data.get("is_dev_required") else "不要")
@@ -290,6 +325,7 @@ def generate_pdf(report_data):
     </html>
     """
 
+    # 6. xhtml2pdfによるPDF変換処理とバイナリ出力
     pdf_buffer = io.BytesIO()
     pisa_status = pisa.CreatePDF(io.BytesIO(html_content.encode("utf-8")), dest=pdf_buffer, encoding='utf-8')
     if pisa_status.err: 
@@ -316,6 +352,24 @@ def show_result_dialog(report_data):
     lat, lon = report_data.get("center_lat"), report_data.get("center_lon")
     input_mode = report_data.get("input_mode", "")
     
+    current_zone = report_data["current_zone"]
+    target_use_name = report_data["target_use_name"]
+    combined_spec_str = report_data.get("combined_spec_str", "―")
+
+    # 手入力モード時のUI表示制御
+    if input_mode == "✍️ 手入力":
+        if "市街化区域" in str(current_zone):
+            combined_spec_str = "―"
+        elif "市街化調整区域" in str(current_zone):
+            target_use_name = "指定なし"
+            combined_spec_str = "60% / 200%"
+        elif "都市計画区域外" in str(current_zone):
+            target_use_name = "指定なし"
+            combined_spec_str = "指定なし"
+        else:
+            target_use_name = "―"
+            combined_spec_str = "―"
+
     def make_link_html(url, title, theme=None):
         color = themes_color_get(theme) if theme else "#555"
         return f'<a href="{url}" target="_blank" style="color: {color}; text-decoration: underline;">{title}</a>' if lat and lon else title
@@ -335,15 +389,15 @@ def show_result_dialog(report_data):
         </div>
         <div style="flex: 1.0; border-left: 2px solid #cbd5e1; padding-left: 14px;">
             <div style="font-size: 1.15rem; color: #555; margin-bottom: 8px; font-weight: bold;">{zone_title}</div>
-            <div style="font-size: 1.35rem; font-weight: bold; color: #111; line-height: 1.3;">{report_data["current_zone"]}</div>
+            <div style="font-size: 1.35rem; font-weight: bold; color: #111; line-height: 1.3;">{current_zone}</div>
         </div>
         <div style="flex: 1.5; border-left: 2px solid #cbd5e1; padding-left: 14px;">
             <div style="font-size: 1.15rem; color: #555; margin-bottom: 8px; font-weight: bold;">{use_title}</div>
-            <div style="font-size: 1.35rem; font-weight: bold; color: #111; line-height: 1.3;">{report_data["target_use_name"]}</div>
+            <div style="font-size: 1.35rem; font-weight: bold; color: #111; line-height: 1.3;">{target_use_name}</div>
         </div>
         <div style="flex: 1.2; border-left: 2px solid #cbd5e1; padding-left: 14px;">
             <div style="font-size: 1.15rem; color: #555; margin-bottom: 8px; font-weight: bold;">📐 建蔽率 / 容積率</div>
-            <div style="font-size: 1.4rem; font-weight: bold; color: #111; line-height: 1.3;">{report_data.get("combined_spec_str", "―")}</div>
+            <div style="font-size: 1.4rem; font-weight: bold; color: #111; line-height: 1.3;">{combined_spec_str}</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -386,6 +440,7 @@ def show_result_dialog(report_data):
             is_dev = report_data.get("is_dev_required", False)
             render_law_card("🚨 【開発許可】" if is_dev else "✅ 【開発許可】", "必要" if is_dev else "不要", "red" if is_dev else "green")
 
+        # 手入力モード（GISによる自動判定不可）の場合は以下を完全に非表示にする
         if input_mode != "✍️ 手入力":
             if report_data.get("gdf_dosha_none"):
                 st.caption("ℹ️ 土砂災害警戒区域データが見つかりません。")
@@ -405,30 +460,25 @@ def show_result_dialog(report_data):
             title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=101&op=70&ot=1&vlf=0003ffffffffffffffffffffffffff" if lat else "", "【洪水浸水想定区域】", theme)
             render_law_card(f"🌊 {title}", status, theme)
 
-        status = report_data.get("cultural_point_status", "✅ 対象外")
-        if "遺跡あり" in status or "あり" in status:
-            theme = "red"
-        elif "50m以内" in status:
-            theme = "yellow"
-        else:
-            theme = "green"
-        title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=402&op=70&ot=1&vlf=-1" if lat else "", "【埋蔵文化財】", theme)
-        render_law_card(f"🏺 {title}", status, theme)
-         
-        forest_status = report_data.get("forest_point_status", "森林なし")
-        theme = "red" if forest_status == "森林あり" else ("yellow" if forest_status == "50m以内に森林" else "green")
-        title = make_link_html(f"https://fcloud.pref.shizuoka.jp/fgis/?version=1.26.0525.a#15/{lat:.5f}/{lon:.5f}" if lat else "", "【森林法】", theme)
-        render_law_card(f"🌲 {title}", forest_status, theme)
+            status = report_data.get("cultural_point_status", "✅ 対象外")
+            theme = "red" if ("遺跡あり" in status or "あり" in status) else ("yellow" if "50m以内" in status else "green")
+            title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=402&op=70&ot=1&vlf=-1" if lat else "", "【埋蔵文化財】", theme)
+            render_law_card(f"🏺 {title}", status, theme)
+             
+            forest_status = report_data.get("forest_point_status", "森林なし")
+            theme = "red" if forest_status == "森林あり" else ("yellow" if forest_status == "50m以内に森林" else "green")
+            title = make_link_html(f"https://fcloud.pref.shizuoka.jp/fgis/?version=1.26.0525.a#15/{lat:.5f}/{lon:.5f}" if lat else "", "【森林法】", theme)
+            render_law_card(f"🌲 {title}", forest_status, theme)
 
     # 右カラム（2列目）の制御
     with diag_col2:
+        # 手入力モードの場合は以下を完全に非表示にする
         if input_mode != "✍️ 手入力":
             status = report_data.get("road_status", "区域外")
             theme = "green" if status == "区域外" else "red"
             title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=dm&mp=300&op=70&ot=1&vlf=000010000000" if lat else "", "【都市計画道路】", theme)
             render_law_card(f"🛣️ {title}", status, theme)
 
-        if input_mode != "✍️ 手入力":
             if lat and lon:
                 road_url = f"https://www2.wagmap.jp/shizuoka/Map?mid=1&mpx={lon + 0.00321:.6f}&mpy={lat - 0.00328:.6f}&bsw=1200&bsh=800"
                 road_title = f'<a href="{road_url}" target="_blank" style="color: #2e7d32; text-decoration: underline;">【周辺の道路】</a>'
@@ -437,6 +487,7 @@ def show_result_dialog(report_data):
                 road_title, road_text = '【周辺の道路】', '<span style="font-size: 1.4rem; font-weight: bold; color: #2e7d32;">🔗静岡市地図情報サービス</span>'
             render_law_card(f"🚗 {road_title}", road_text, "green")
 
+        # 【緑地】（手入力でも面積要件を算出可能なので維持）
         if "静岡市" in loc_label and report_data["site_area"] >= 1000:
             import math
             is_factory = "工場" in str(report_data.get("max_basis", ""))
@@ -446,13 +497,16 @@ def show_result_dialog(report_data):
         else:
             render_law_card("🌲 【緑地】", "不要", "orange")
 
+        # 【緩衝帯】（手入力でも維持）
         bz_status = report_data.get("buffer_zone_status", "不要")
         render_law_card("🌳 【緩衝帯】", bz_status, "orange")
 
+        # 【調整池】（手入力でも維持）
         if not is_point_mode:
             left_text = '<span style="font-size: 1.15rem;">（巴川流域）</span> ' if report_data.get("is_tomoe", False) else ""
             render_law_card("💧 【調整池】", f'{left_text}{report_data.get("pond_volume_str", "―")}', "blue")
 
+        # 手入力モードの場合は以下を完全に非表示にする
         if input_mode != "✍️ 手入力":
             r_dist_status = report_data.get("river_dist_status", "1km以内に主要河川なし")
             theme = "blue"
@@ -523,6 +577,9 @@ with col_left:
     input_mode = st.radio("敷地情報の入力方法", ["🗺️ 地図に描画", "✍️ 手入力"], label_visibility="collapsed")
     st.markdown("---")
     
+    # セッション状態およびデフォルト値の定義
+    selected_use_zone = "指定なし"
+
     if input_mode == "✍️ 手入力":
         city_name = st.selectbox("所在", ["静岡市"])
         try:
@@ -542,7 +599,13 @@ with col_left:
                 
             df_town_filtered = df_ward_filtered[df_ward_filtered["50音分類"] == selected_kana]
             town_list = df_town_filtered[["町名", "ふりがな"]].drop_duplicates().sort_values("ふりがな")["町名"].tolist()
-            selected_town = st.selectbox("町名", town_list)
+            
+            selected_town = st.selectbox(
+                "町名", 
+                town_list, 
+                key="selected_town_name", 
+                on_change=on_town_change
+            )
             detailed_location = f"静岡市{selected_ward}{selected_town}"
             
         except Exception as e:
@@ -551,8 +614,14 @@ with col_left:
             
         site_area = st.number_input("敷地面積 (㎡)", min_value=0.0, value=0.0, step=100.0)
         has_data = site_area > 0
-        current_zone = st.selectbox("区域区分", ["市街化区域", "市街化調整区域", "都市計画区域外"])
-        use_choice = st.selectbox("用途地域", ["準工業・工業・工専以外", "準工業地域", "工業地域・工業専用地域"])
+        
+        current_zone = st.selectbox("区域区分", ["―", "市街化区域", "市街化調整区域", "都市計画区域外"], index=0)
+        
+        # 区域区分が「市街化区域」の場合のみ、用途地域のセレクトボックスを表示
+        if current_zone == "市街化区域":
+            selected_use_zone = st.selectbox("用途地域", ["準工業・工業・工専以外", "準工業地域", "工業地域・工業専用地域"])
+        else:
+            selected_use_zone = "指定なし"
 
     # 🏢 事業目的マスタの定義
     st.markdown('<span style="font-size: 22px; font-weight: bold;">【事業目的の選択】</span>', unsafe_allow_html=True)
@@ -600,7 +669,22 @@ with col_center:
     with col_title:
         st.subheader("🗺️ 開発区域の指定")
         
-    m = folium.Map(location=[34.9792, 138.3831], zoom_start=15, max_zoom=21, control_scale=True, tiles=None)
+    m = folium.Map(
+        location=[st.session_state.center_lat, st.session_state.center_lon], 
+        zoom_start=15, 
+        max_zoom=21, 
+        control_scale=True, 
+        tiles=None
+    )
+    
+    m.location = [st.session_state.center_lat, st.session_state.center_lon]
+    
+    if st.session_state.center_lat != 34.975562 or st.session_state.center_lon != 138.382758:
+        m.fit_bounds([
+            [st.session_state.center_lat - 0.002, st.session_state.center_lon - 0.002],
+            [st.session_state.center_lat + 0.002, st.session_state.center_lon + 0.002]
+        ])
+
     folium.TileLayer(tiles='https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', attr='国土地理院', name='国土地理院 航空写真', max_zoom=18).add_to(m)
     folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', attr='Google', name='Google Map', max_zoom=20).add_to(m)
     folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google', name='Google 航空写真', max_zoom=21).add_to(m)
@@ -684,7 +768,12 @@ with col_center:
     m.get_root().html.add_child(folium.Element(clear_script))
     folium.LayerControl(position='topright').add_to(m)
 
-    map_data = st_folium(m, width="100%", height=740, key="gis_pure_calc_map_v41")
+    map_data = st_folium(
+        m, 
+        width="100%", 
+        height=740, 
+        key=f"gis_pure_calc_map_{st.session_state.center_lat}_{st.session_state.center_lon}"
+    )
     drawn_features = map_data.get("all_drawings")
 
     if input_mode == "🗺️ 地図に描画" and drawn_features:
@@ -954,15 +1043,36 @@ with col_center:
                     road_status = "区域内" if not hit_road_near[hit_road_near.intersects(target_geom)].empty else "10m以内に区域"
 
         report_data = {
-            "input_mode": input_mode, "geom_type": geom_type, "center_lat": center_lat, "center_lon": center_lon,
-            "loc_label": detailed_location, "site_area": site_area, "current_zone": current_zone,
-            "target_use_name": use_choice, "kinpei_str": kinpei_str, "youseki_str": youseki_str,
-            "is_dev_required": is_dev_required, "dosha_point_status": dosha_point_status, "agri_point_status": agri_point_status,
-            "pond_volume_str": pond_volume_str, "flood_status": flood_status, "cultural_point_status": cultural_point_status,
-            "forest_point_status": forest_point_status, "buffer_zone_status": buffer_zone_status, "river_dist_status": river_dist_status,
-            "road_status": road_status, "gdf_dosha_none": (gdf_dosha is None), "is_tomoe": is_tomoe, 
-            "vol_min": vol_min, "vol_max": vol_max, "purpose_none": (selected_purpose is None), 
-            "max_basis": max_basis, "max_green": max_green, "dosha_red_area": dosha_red_area, "dosha_yellow_area": dosha_yellow_area
+            "input_mode": input_mode, 
+            "geom_type": geom_type, 
+            "center_lat": center_lat, 
+            "center_lon": center_lon,
+            "loc_label": detailed_location, 
+            "site_area": site_area, 
+            "current_zone": current_zone,
+            "target_use_name": selected_use_zone,  
+            "combined_spec_str": "―",              
+            "kinpei_str": kinpei_str, 
+            "youseki_str": youseki_str,
+            "is_dev_required": is_dev_required, 
+            "dosha_point_status": dosha_point_status, 
+            "agri_point_status": agri_point_status,
+            "pond_volume_str": pond_volume_str, 
+            "flood_status": flood_status, 
+            "cultural_point_status": cultural_point_status,
+            "forest_point_status": forest_point_status, 
+            "buffer_zone_status": buffer_zone_status, 
+            "river_dist_status": river_dist_status,
+            "road_status": road_status, 
+            "gdf_dosha_none": (gdf_dosha is None), 
+            "is_tomoe": is_tomoe, 
+            "vol_min": vol_min, 
+            "vol_max": vol_max, 
+            "purpose_none": (selected_purpose is None), 
+            "max_basis": max_basis, 
+            "max_green": max_green, 
+            "dosha_red_area": dosha_red_area, 
+            "dosha_yellow_area": dosha_yellow_area
         }
 
         k_list = [x.strip() for x in report_data.get('kinpei_str', '').split(',') if x.strip()]
