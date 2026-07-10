@@ -134,7 +134,7 @@ def generate_pdf(report_data):
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
 
-    # 1. カラー判定ロジックの定義
+    # 1. カラー判定ロジック of 定義
     def get_custom_color(label_name, status_text):
         if not status_text:
             return "#ffffff"
@@ -180,22 +180,10 @@ def generate_pdf(report_data):
     
     loc_label = report_data.get('loc_label') or '―'
     current_zone = report_data.get('current_zone') or '―'
+    
     target_use_name = report_data.get('target_use_name') or '―'
     combined_spec_str = report_data.get('combined_spec_str') or '―'
 
-    if input_mode == "✍️ 手入力":
-        if "市街化区域" in str(current_zone):
-            combined_spec_str = "―"
-        elif "市街化調整区域" in str(current_zone):
-            target_use_name = "指定なし"
-            combined_spec_str = "60% / 200%"
-        elif "都市計画区域外" in str(current_zone):
-            target_use_name = "指定なし"
-            combined_spec_str = "指定なし"
-        else:
-            target_use_name = "―"
-            combined_spec_str = "―"
-    
     # 3. 主要法令に基づく手続要件のデータ成形
     toshi_status = "―" if is_point_mode else ("必要" if report_data.get("is_dev_required") else "不要")
     agri_status = report_data.get("agri_point_status") or "農地なし"
@@ -283,7 +271,7 @@ def generate_pdf(report_data):
             </tr>
         """
 
-    # 5. HTML・CSSテンプレート組み立てとPDF出力
+    # 5. HTML・CSSテンプレート組み立て
     html_content = f"""
     <html>
     <head>
@@ -332,6 +320,7 @@ def generate_pdf(report_data):
         raise Exception("HTMLからPDFへの変換処理でエラーが発生しました。")
     return pdf_buffer.getvalue()
 
+
 # ----------------------------------------------------
 # 💡 ポップアップ（ダイアログ）の定義
 # ----------------------------------------------------
@@ -353,22 +342,9 @@ def show_result_dialog(report_data):
     input_mode = report_data.get("input_mode", "")
     
     current_zone = report_data["current_zone"]
+    
     target_use_name = report_data["target_use_name"]
     combined_spec_str = report_data.get("combined_spec_str", "―")
-
-    # 手入力モード時のUI表示制御
-    if input_mode == "✍️ 手入力":
-        if "市街化区域" in str(current_zone):
-            combined_spec_str = "―"
-        elif "市街化調整区域" in str(current_zone):
-            target_use_name = "指定なし"
-            combined_spec_str = "60% / 200%"
-        elif "都市計画区域外" in str(current_zone):
-            target_use_name = "指定なし"
-            combined_spec_str = "指定なし"
-        else:
-            target_use_name = "―"
-            combined_spec_str = "―"
 
     def make_link_html(url, title, theme=None):
         color = themes_color_get(theme) if theme else "#555"
@@ -487,7 +463,7 @@ def show_result_dialog(report_data):
                 road_title, road_text = '【周辺の道路】', '<span style="font-size: 1.4rem; font-weight: bold; color: #2e7d32;">🔗静岡市地図情報サービス</span>'
             render_law_card(f"🚗 {road_title}", road_text, "green")
 
-        # 【緑地】（手入力でも面積要件を算出可能なので維持）
+        # 【緑地】（手入力でも維持）
         if "静岡市" in loc_label and report_data["site_area"] >= 1000:
             import math
             is_factory = "工場" in str(report_data.get("max_basis", ""))
@@ -617,7 +593,6 @@ with col_left:
         
         current_zone = st.selectbox("区域区分", ["―", "市街化区域", "市街化調整区域", "都市計画区域外"], index=0)
         
-        # 区域区分が「市街化区域」の場合のみ、用途地域のセレクトボックスを表示
         if current_zone == "市街化区域":
             selected_use_zone = st.selectbox("用途地域", ["準工業・工業・工専以外", "準工業地域", "工業地域・工業専用地域"])
         else:
@@ -709,7 +684,6 @@ with col_center:
         justify-content: center !important;
         text-decoration: none !important;
     }
-
     .leaflet-draw-draw-polygon::before { content: "⬡" !important; color: #333; font-weight: bold; }
     .leaflet-draw-draw-marker::before { content: "📍" !important; }
     .leaflet-draw-edit-edit::before { content: "✏️" !important; }
@@ -724,20 +698,11 @@ with col_center:
         display: flex !important;
         align-items: center !important;
         justify-content: center !important;
+        text-align: center !important;
     }
 
-    .leaflet-draw-actions,
-    .leaflet-draw-actions li,
-    .leaflet-draw-actions a {
-        height: 38px !important;
-    }
-
-    .leaflet-draw-actions a {
-        line-height: 38px !important;
-        font-size: 15px !important;
-        font-weight: bold !important;
-        padding: 0 12px !important;
-    }
+    .leaflet-draw-actions, .leaflet-draw-actions li, .leaflet-draw-actions a { height: 38px !important; }
+    .leaflet-draw-actions a { line-height: 38px !important; font-size: 15px !important; font-weight: bold !important; padding: 0 12px !important; }
     </style>
 
     <script>
@@ -746,15 +711,12 @@ with col_center:
             var deleteBtn = document.querySelector('.leaflet-draw-edit-remove');
             if (deleteBtn) {
                 clearInterval(checkExist);
-                
                 deleteBtn.addEventListener('click', function(e) {
                     e.preventDefault(); e.stopPropagation();
                     var maps = Object.values(window).filter(v => v instanceof L.Map);
                     maps.forEach(function(map) {
                         map.eachLayer(function(layer) {
-                            if (layer instanceof L.FeatureGroup && typeof layer.clearLayers === 'function') {
-                                layer.clearLayers();
-                            }
+                            if (layer instanceof L.FeatureGroup && typeof layer.clearLayers === 'function') { layer.clearLayers(); }
                         });
                     });
                     var clearAllBtn = document.querySelector('.leaflet-draw-actions a[title="Cancel drawing"]');
@@ -768,12 +730,10 @@ with col_center:
     m.get_root().html.add_child(folium.Element(clear_script))
     folium.LayerControl(position='topright').add_to(m)
 
-    map_data = st_folium(
-        m, 
-        width="100%", 
-        height=740, 
-        key=f"gis_pure_calc_map_{st.session_state.center_lat}_{st.session_state.center_lon}"
-    )
+    # 💡 モードに合わせてキーを切り分け、描画モード時のリセットを防止
+    map_key = f"gis_map_sync_{st.session_state.center_lat}_{st.session_state.center_lon}" if input_mode == "✍️ 手入力" else "gis_map_draw_fixed_key"
+
+    map_data = st_folium(m, width="100%", height=740, key=map_key)
     drawn_features = map_data.get("all_drawings")
 
     if input_mode == "🗺️ 地図に描画" and drawn_features:
@@ -1042,37 +1002,16 @@ with col_center:
                 if not hit_road_near.empty:
                     road_status = "区域内" if not hit_road_near[hit_road_near.intersects(target_geom)].empty else "10m以内に区域"
 
+        # --- 地図データオブジェクトの生成 ---
         report_data = {
-            "input_mode": input_mode, 
-            "geom_type": geom_type, 
-            "center_lat": center_lat, 
-            "center_lon": center_lon,
-            "loc_label": detailed_location, 
-            "site_area": site_area, 
-            "current_zone": current_zone,
-            "target_use_name": selected_use_zone,  
-            "combined_spec_str": "―",              
-            "kinpei_str": kinpei_str, 
-            "youseki_str": youseki_str,
-            "is_dev_required": is_dev_required, 
-            "dosha_point_status": dosha_point_status, 
-            "agri_point_status": agri_point_status,
-            "pond_volume_str": pond_volume_str, 
-            "flood_status": flood_status, 
-            "cultural_point_status": cultural_point_status,
-            "forest_point_status": forest_point_status, 
-            "buffer_zone_status": buffer_zone_status, 
-            "river_dist_status": river_dist_status,
-            "road_status": road_status, 
-            "gdf_dosha_none": (gdf_dosha is None), 
-            "is_tomoe": is_tomoe, 
-            "vol_min": vol_min, 
-            "vol_max": vol_max, 
-            "purpose_none": (selected_purpose is None), 
-            "max_basis": max_basis, 
-            "max_green": max_green, 
-            "dosha_red_area": dosha_red_area, 
-            "dosha_yellow_area": dosha_yellow_area
+            "input_mode": input_mode, "geom_type": geom_type, "center_lat": center_lat, "center_lon": center_lon,
+            "loc_label": detailed_location, "site_area": site_area, "current_zone": current_zone,
+            "target_use_name": use_choice, "combined_spec_str": "―", "kinpei_str": kinpei_str, "youseki_str": youseki_str,
+            "is_dev_required": is_dev_required, "dosha_point_status": dosha_point_status, "agri_point_status": agri_point_status,
+            "pond_volume_str": pond_volume_str, "flood_status": flood_status, "cultural_point_status": cultural_point_status,
+            "forest_point_status": forest_point_status, "buffer_zone_status": buffer_zone_status, "river_dist_status": river_dist_status,
+            "road_status": road_status, "gdf_dosha_none": (gdf_dosha is None), "is_tomoe": is_tomoe, "vol_min": vol_min, "vol_max": vol_max,
+            "purpose_none": (selected_purpose is None), "max_basis": max_basis, "max_green": max_green, "dosha_red_area": dosha_red_area, "dosha_yellow_area": dosha_yellow_area
         }
 
         k_list = [x.strip() for x in report_data.get('kinpei_str', '').split(',') if x.strip()]
@@ -1093,16 +1032,13 @@ with col_center:
         else:
             report_data['combined_spec_str'] = '―'
 
-    # ✍️ 手入力モードの場合のデータ格納処理（地図情報がないため、サイドバーの値を手動マッピング）
     elif input_mode == "✍️ 手入力":
         has_data = True
+        import math
         
-        # 開発許可要件の計算（市街化区域: 1000㎡以上, 市街化調整区域: 500㎡以上、または特定建築物等）
         dev_limit = 1000.0 if current_zone == "市街化区域" else 500.0
         is_dev_required = (site_area >= dev_limit) or (current_zone == "市街化調整区域" and selected_purpose is not None and selected_purpose["cat"] in ["building", "spec_1"])
         
-        # 緑地・工場立地法要件の計算
-        import math
         max_basis, max_green = "不要", 0.0
         green_reqs = {"5%, 市みどり条例": site_area * 0.05}
         if selected_purpose is not None and selected_purpose["is_factory_law"] and (site_area >= 9000 or building_area >= 3000):
@@ -1112,13 +1048,11 @@ with col_center:
         max_basis = max(green_reqs, key=green_reqs.get)
         max_green = green_reqs[max_basis]
 
-        # 緩衝帯要件の計算
         buffer_zone_status = "不要"
         area_ha = site_area / 10000.0
         if area_ha >= 1.0:
             buffer_zone_status = "4m以上" if area_ha < 1.5 else "5m以上" if area_ha < 5.0 else "10m以上" if area_ha < 15.0 else "15m以上" if area_ha < 25.0 else "20m以上"
 
-        # 調整池容量の計算
         pond_volume_str = "不要"
         if site_area >= 1000.0:
             A1 = site_area / 10000.0
@@ -1127,11 +1061,21 @@ with col_center:
             pond_volume_rounded = math.ceil(pond_volume_base / 10) * 10
             pond_volume_str = f"{pond_volume_rounded:,}㎥"
 
-        # ダイアログ表示用データのマッピング（KeyErrorの原因「loc_label」などを網羅）
+        if current_zone == "―" or not current_zone:
+            target_use_name, combined_spec_str = "―", "―"
+        elif "市街化区域" in str(current_zone):
+            target_use_name, combined_spec_str = selected_use_zone, "―"
+        elif "市街化調整区域" in str(current_zone):
+            target_use_name, combined_spec_str = "指定なし", "60% / 200%"
+        elif "都市計画区域外" in str(current_zone):
+            target_use_name, combined_spec_str = "指定なし", "指定なし"
+        else:
+            target_use_name, combined_spec_str = "―", "―"
+
         report_data = {
             "input_mode": input_mode, "geom_type": "Polygon", "center_lat": None, "center_lon": None,
             "loc_label": detailed_location, "site_area": site_area, "current_zone": current_zone,
-            "target_use_name": use_choice, "combined_spec_str": "60% / 200%" if current_zone == "市街化調整区域" else "指定なし",
+            "target_use_name": target_use_name, "combined_spec_str": combined_spec_str,
             "is_dev_required": is_dev_required, "dosha_point_status": "手入力のため判定外", "agri_point_status": "手入力のため判定外",
             "pond_volume_str": pond_volume_str, "flood_status": "手入力のため判定外", "cultural_point_status": "手入力のため判定外",
             "forest_point_status": "手入力のため判定外", "buffer_zone_status": buffer_zone_status, "river_dist_status": "手入力のため判定外",
@@ -1141,6 +1085,5 @@ with col_center:
         }
 
     with col_btn:
-        if has_data:
-            if st.button("**判定**", type="primary", use_container_width=True, key="btn_pure_bold_wide"):
-                show_result_dialog(report_data)
+        if has_data and st.button("**判定**", type="primary", use_container_width=True, key="btn_pure_bold_wide"):
+            show_result_dialog(report_data)
