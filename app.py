@@ -107,28 +107,22 @@ def calculate_area_m2(geom):
 def generate_pdf(report_data):
     import io
     import os
+    import math
     from xhtml2pdf import pisa
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
 
+    # 1. カラー判定ロジックの定義
     def get_custom_color(label_name, status_text):
         if not status_text:
             return "#ffffff"
         
         if label_name == "周辺の道路": return "#c8e6c9"
         if label_name == "周辺の河川": return "#bbdefb"
-        
-        if label_name == "緑地":
-            return "#ffffff" if "不要" in status_text else "#ffe0b2"
-            
-        if label_name == "緩衝帯":
-            return "#ffe0b2" if any(k in status_text for k in ["必要", "m以上"]) else "#ffffff"
-            
-        if label_name == "調整池":
-            return "#ffffff" if "不要" in status_text or status_text in ["免除", "―"] else "#bbdefb"
-
-        if label_name == "洪水浸水想定区域":
-            return "#c8e6c9" if any(k in status_text for k in ["区域外", "なし"]) else "#ffcdd2"
+        if label_name == "緑地": return "#ffffff" if "不要" in status_text else "#ffe0b2"
+        if label_name == "緩衝帯": return "#ffe0b2" if any(k in status_text for k in ["必要", "m以上"]) else "#ffffff"
+        if label_name == "調整池": return "#ffffff" if "不要" in status_text or status_text in ["免除", "―"] else "#bbdefb"
+        if label_name == "洪水浸水想定区域": return "#c8e6c9" if any(k in status_text for k in ["区域外", "なし"]) else "#ffcdd2"
 
         if label_name == "土砂災害警戒区域":
             if status_text == "レッド": return "#ffcdd2"
@@ -136,8 +130,7 @@ def generate_pdf(report_data):
             return "#c8e6c9" if "区域外" in status_text else "#ffffff"
 
         if label_name in ["農地法", "埋蔵文化財", "森林法"]:
-            if "50m以内" in status_text:
-                return "#fff9c4"
+            if "50m以内" in status_text: return "#fff9c4"
             kw_map = {"農地法": ("農地あり", "農地なし"), "埋蔵文化財": ("遺跡あり", "遺跡なし"), "森林法": ("森林あり", "森林なし")}
             kw_red, kw_green = kw_map[label_name]
             if kw_red in status_text: return "#ffcdd2"
@@ -146,9 +139,9 @@ def generate_pdf(report_data):
         if any(k in status_text for k in ["必要", "制限", "レッド", "危険", "区域内"]): return "#ffcdd2"
         if any(k in status_text for k in ["注意", "確認", "イエロー", "要相談", "協議", "10m以内に区域"]): return "#fff9c4"
         if any(k in status_text for k in ["不要", "許可不要", "免除", "該当なし", "区域外", "なし"]): return "#c8e6c9"
-            
         return "#ffffff"
 
+    # 2. フォントの登録
     font_ttc_path = os.path.join(".", "fonts", "YuGothB.ttc")
     target_font = "YuGothic" if os.path.exists(font_ttc_path) else "HeiseiKakuGo-W5"
     if target_font == "YuGothic":
@@ -168,20 +161,18 @@ def generate_pdf(report_data):
     target_use_name = report_data.get('target_use_name') or '―'
     combined_spec_str = report_data.get('combined_spec_str') or '―'
     
-    # 📋 1. 主要法令に基づく手続要件の文字列化
+    # 3. 主要法令に基づく手続要件のデータ成形
     toshi_status = "―" if is_point_mode else ("必要" if report_data.get("is_dev_required") else "不要")
     agri_status = report_data.get("agri_point_status") or "農地なし"
     forest_status = report_data.get("forest_point_status") or "森林なし"
     road_status = report_data.get("road_status") or "区域外"
     cultural_status = report_data.get("cultural_point_status") or "遺跡なし"
     
-    # 🌊 2. 各種ハザード・リスク情報の成形（改行タグ挿入）
     flood_status = report_data.get("flood_status") or "区域外"
     river_status = (report_data.get("river_dist_status") or "1km以内に主要河川なし").replace("まで", 'まで<br />')
     road_display = "―"
     dosha_status = (report_data.get("dosha_point_status") or "区域外").replace("イエロー、50m以内にレッド", 'イエロー、<br />50m以内にレッド')
 
-    # 🏗️ 3. 技術基準・附帯施設要件の算出と成形
     pond_display, green_display, bz_status = "不要", "不要", "不要"
     
     if not is_point_mode:
@@ -191,16 +182,18 @@ def generate_pdf(report_data):
         elif pond_text == "―":
             pond_display = "―"
 
-        max_green = report_data.get("max_green") or 0.0
         max_basis = report_data.get("max_basis") or "不要"
-        if "静岡市" in loc_label and site_area >= 1000 and max_green > 0.0:
-            green_display = f"{max_green:,.1f} ㎡以上<br />" + (max_basis if max_basis.startswith("（") else f"（{max_basis}）")
+        if "静岡市" in loc_label and site_area >= 1000:
+            is_factory = "工場" in str(max_basis)
+            green_area_val = math.ceil((site_area * 0.25 if is_factory else (report_data.get("max_green") or 0.0)) * 100) / 100
+            if green_area_val > 0.0:
+                basis_text = "20%+5%, 工場立地法" if is_factory else "5%, 市みどり条例"
+                green_display = f"{green_area_val:,.2f} ㎡以上<br />（{basis_text}）"
 
         bz_status = report_data.get("buffer_zone_status") or "不要"
 
-    # 👉 入力モードに応じて、メインテーブル（main-table）の中身のHTMLを動的に生成
+    # 4. HTMLテーブルの組み立て
     if input_mode == "✍️ 手入力":
-        # 手入力モードの場合は4項目に限定し、2行のテーブルにする
         table_body_html = f"""
             <tr>
                 <th style="background-color: {get_custom_color('開発許可', toshi_status)};">開発許可</th>
@@ -216,67 +209,66 @@ def generate_pdf(report_data):
             </tr>
         """
     else:
-        # 通常モード（GIS判定時）は全項目を網羅する12項目（6行）のテーブルにする
         table_body_html = f"""
             <tr>
                 <th style="background-color: {get_custom_color('開発許可', toshi_status)};">開発許可</th>
                 <td style="background-color: {get_custom_color('開発許可', toshi_status)};">{toshi_status}</td>
-                <th style="background-color: {get_custom_color('緑地', green_display)};">緑地</th>
-                <td style="background-color: {get_custom_color('緑地', green_display)};">{green_display}</td>
-            </tr>
-            <tr>
-                <th style="background-color: {get_custom_color('土砂災害警戒区域', dosha_status)};">土砂災害警戒区域</th>
-                <td style="background-color: {get_custom_color('土砂災害警戒区域', dosha_status)};">{dosha_status}</td>
-                <th style="background-color: {get_custom_color('緩衝帯', bz_status)};">緩衝帯</th>
-                <td style="background-color: {get_custom_color('緩衝帯', bz_status)};">{bz_status}</td>
-            </tr>
-            <tr>
-                <th style="background-color: {get_custom_color('農地法', agri_status)};">農地法</th>
-                <td style="background-color: {get_custom_color('農地法', agri_status)};">{agri_status}</td>
-                <th style="background-color: {get_custom_color('調整池', pond_display)};">調整池</th>
-                <td style="background-color: {get_custom_color('調整池', pond_display)};">{pond_display}</td>
-            </tr>
-            <tr>
-                <th style="background-color: {get_custom_color('洪水浸水想定区域', flood_status)};">洪水浸水想定区域</th>
-                <td style="background-color: {get_custom_color('洪水浸水想定区域', flood_status)};">{flood_status}</td>
-                <th style="background-color: {get_custom_color('周辺の河川', river_status)};">周辺の河川</th>
-                <td style="background-color: {get_custom_color('周辺の河川', river_status)};">{river_status}</td>
-            </tr>
-            <tr>
-                <th style="background-color: {get_custom_color('埋蔵文化財', cultural_status)};">埋蔵文化財</th>
-                <td style="background-color: {get_custom_color('埋蔵文化財', cultural_status)};">{cultural_status}</td>
                 <th style="background-color: {get_custom_color('都市計画道路', road_status)};">都市計画道路</th>
                 <td style="background-color: {get_custom_color('都市計画道路', road_status)};">{road_status}</td>
             </tr>
             <tr>
-                <th style="background-color: {get_custom_color('森林法', forest_status)};">森林法</th>
-                <td style="background-color: {get_custom_color('森林法', forest_status)};">{forest_status}</td>
+                <th style="background-color: {get_custom_color('土砂災害警戒区域', dosha_status)};">土砂災害警戒区域</th>
+                <td style="background-color: {get_custom_color('土砂災害警戒区域', dosha_status)};">{dosha_status}</td>
                 <th style="background-color: {get_custom_color('周辺の道路', road_display)};">周辺の道路</th>
                 <td style="background-color: {get_custom_color('周辺の道路', road_display)};">{road_display}</td>
             </tr>
+            <tr>
+                <th style="background-color: {get_custom_color('農地法', agri_status)};">農地法</th>
+                <td style="background-color: {get_custom_color('農地法', agri_status)};">{agri_status}</td>
+                <th style="background-color: {get_custom_color('緑地', green_display)};">緑地</th>
+                <td style="background-color: {get_custom_color('緑地', green_display)};">{green_display}</td>
+            </tr>
+            <tr>
+                <th style="background-color: {get_custom_color('洪水浸水想定区域', flood_status)};">洪水浸水想定区域</th>
+                <td style="background-color: {get_custom_color('洪水浸水想定区域', flood_status)};">{flood_status}</td>
+                <th style="background-color: {get_custom_color('緩衝帯', bz_status)};">緩衝帯</th>
+                <td style="background-color: {get_custom_color('緩衝帯', bz_status)};">{bz_status}</td>
+            </tr>
+            <tr>
+                <th style="background-color: {get_custom_color('埋蔵文化財', cultural_status)};">埋蔵文化財</th>
+                <td style="background-color: {get_custom_color('埋蔵文化財', cultural_status)};">{cultural_status}</td>
+                <th style="background-color: {get_custom_color('調整池', pond_display)};">調整池</th>
+                <td style="background-color: {get_custom_color('調整池', pond_display)};">{pond_display}</td>
+            </tr>
+            <tr>
+                <th style="background-color: {get_custom_color('森林法', forest_status)};">森林法</th>
+                <td style="background-color: {get_custom_color('森林法', forest_status)};">{forest_status}</td>
+                <th style="background-color: {get_custom_color('周辺の河川', river_status)};">周辺の河川</th>
+                <td style="background-color: {get_custom_color('周辺の河川', river_status)};">{river_status}</td>
+            </tr>
         """
 
-    # 🎨 4. HTML・CSSテンプレート組み立て
+    # 5. HTML・CSSテンプレート組み立てとPDF出力
     html_content = f"""
     <html>
     <head>
         <meta charset="utf-8">
-            <style>
-                @page {{ size: a4; margin: 0.8cm; }}
-                body {{ font-family: "{target_font}", sans-serif; color: #121212; font-size: 10.5pt; line-height: 1.4; }}
-                .header {{ border-bottom: 2px solid #003366; padding-bottom: 8px; margin-bottom: 20px; }}
-                .title {{ font-size: 18pt; font-weight: bold; color: #003366; }}
-                table.meta-table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
-                table.meta-table td {{ padding: 8px 12px; border: 1px solid #555555; vertical-align: middle; }}
-                table.meta-table .meta-label {{ color: #121212; font-weight: bold; font-size: 11pt; width: 25%; background-color: #d1d1d1; text-align: center !important; vertical-align: middle; padding: 8px 0px !important; }}
-                table.main-table {{ width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 15px; }}
-                table.main-table th, table.main-table td {{ border: 1px solid #555555; font-size: 9.5pt; vertical-align: middle; }}
-                table.main-table th {{ font-weight: bold; text-align: center; padding: 15px 10px; }}
-                table.main-table td {{ width: 30%; text-align: left; padding: 10px 10px 10px 15px; }}
-                .footer {{ text-align: center; font-size: 8pt; color: #121212; margin-top: 40px; padding-top: 10px; }}
-                .footer-title {{ display: block; font-weight: bold; color: #121212; margin: 0 0 4px 0 !important; }}
-                .footer-line {{ display: block; margin: 0 !important; padding: 1px 0 !important; line-height: 1.4; }}
-            </style>
+        <style>
+            @page {{ size: a4; margin: 0.8cm; }}
+            body {{ font-family: "{target_font}", sans-serif; color: #121212; font-size: 10.5pt; line-height: 1.4; }}
+            .header {{ border-bottom: 2px solid #003366; padding-bottom: 8px; margin-bottom: 20px; }}
+            .title {{ font-size: 18pt; font-weight: bold; color: #003366; }}
+            table.meta-table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
+            table.meta-table td {{ padding: 8px 12px; border: 1px solid #555555; vertical-align: middle; }}
+            table.meta-table .meta-label {{ color: #121212; font-weight: bold; font-size: 11pt; width: 25%; background-color: #d1d1d1; text-align: center !important; vertical-align: middle; padding: 8px 0px !important; }}
+            table.main-table {{ width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 15px; }}
+            table.main-table th, table.main-table td {{ border: 1px solid #555555; font-size: 9.5pt; vertical-align: middle; }}
+            table.main-table th {{ font-weight: bold; text-align: center; padding: 15px 10px; }}
+            table.main-table td {{ width: 30%; text-align: left; padding: 10px 10px 10px 15px; }}
+            .footer {{ text-align: center; font-size: 8pt; color: #121212; margin-top: 40px; padding-top: 10px; }}
+            .footer-title {{ display: block; font-weight: bold; color: #121212; margin: 0 0 4px 0 !important; }}
+            .footer-line {{ display: block; margin: 0 !important; padding: 1px 0 !important; line-height: 1.4; }}
+        </style>
     </head>
     <body>
         <div class="header"><div class="title">開発行為 判定結果レポート</div></div>
@@ -298,7 +290,6 @@ def generate_pdf(report_data):
     </html>
     """
 
-    # 🖨️ 5. PDFバイナリの生成と出力
     pdf_buffer = io.BytesIO()
     pisa_status = pisa.CreatePDF(io.BytesIO(html_content.encode("utf-8")), dest=pdf_buffer, encoding='utf-8')
     if pisa_status.err: 
@@ -325,7 +316,8 @@ def show_result_dialog(report_data):
     lat, lon = report_data.get("center_lat"), report_data.get("center_lon")
     input_mode = report_data.get("input_mode", "")
     
-    def make_link_html(url, title, color="#555"):
+    def make_link_html(url, title, theme=None):
+        color = themes_color_get(theme) if theme else "#555"
         return f'<a href="{url}" target="_blank" style="color: {color}; text-decoration: underline;">{title}</a>' if lat and lon else title
 
     zone_title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=dm&mp=300&op=70&ot=1&vlf=000001" if lat else "", "🌐 区域区分")
@@ -374,6 +366,7 @@ def show_result_dialog(report_data):
         themes = {
             "red": ("#ffebee", "#ef5350", "#c62828"),
             "orange": ("#fff3e0", "#ffb74d", "#e65100"),
+            "yellow": ("#fffde7", "#ffd600", "#ff6f00"),
             "blue": ("#e8f4f8", "#29b6f6", "#0288d1"),
             "green": ("#e8f5e9", "#66bb6a", "#2e7d32")
         }
@@ -393,38 +386,57 @@ def show_result_dialog(report_data):
             is_dev = report_data.get("is_dev_required", False)
             render_law_card("🚨 【開発許可】" if is_dev else "✅ 【開発許可】", "必要" if is_dev else "不要", "red" if is_dev else "green")
 
-        # 👉 手入力モードではない場合のみ、ハザード・GIS系項目（土砂災害、農地、洪水、文化財、森林）を表示
         if input_mode != "✍️ 手入力":
             if report_data.get("gdf_dosha_none"):
                 st.caption("ℹ️ 土砂災害警戒区域データが見つかりません。")
             else:
                 status = report_data.get("dosha_point_status", "区域外")
-                theme = "red" if status == "レッド" else ("orange" if status != "区域外" else "green")
-                title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=100&op=70&vlf=007f80" if lat else "", "【土砂災害警戒区域】", themes_color_get(theme))
+                theme = "red" if status == "レッド" else ("yellow" if status != "区域外" else "green")
+                title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=100&op=70&vlf=007f80" if lat else "", "【土砂災害警戒区域】", theme)
                 render_law_card(f"🚨 {title}", status, theme)
                 
             agri_status = report_data.get("agri_point_status", "農地なし")
-            theme = "red" if agri_status == "農地あり" else ("orange" if agri_status == "50m以内に農地" else "green")
-            title = make_link_html("https://map.maff.go.jp/", "【農地法】", themes_color_get(theme))
+            theme = "red" if agri_status == "農地あり" else ("yellow" if agri_status == "50m以内に農地" else "green")
+            title = make_link_html("https://map.maff.go.jp/", "【農地法】", theme)
             render_law_card(f"🚜 {title}", agri_status, theme)
                 
             status = report_data.get("flood_status", "区域外")
             theme = "green" if status == "区域外" else "red"
-            title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=101&op=70&ot=1&vlf=0003ffffffffffffffffffffffffff" if lat else "", "【洪水浸水想定区域】", themes_color_get(theme))
+            title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=101&op=70&ot=1&vlf=0003ffffffffffffffffffffffffff" if lat else "", "【洪水浸水想定区域】", theme)
             render_law_card(f"🌊 {title}", status, theme)
 
-            status = report_data.get("cultural_point_status", "✅ 対象外")
-            theme = "green" if "対象外" in status else "orange"
-            title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=402&op=70&ot=1&vlf=-1" if lat else "", "【埋蔵文化財】", themes_color_get(theme))
-            render_law_card(f"🏺 {title}", status, theme)
+        status = report_data.get("cultural_point_status", "✅ 対象外")
+        if "遺跡あり" in status or "あり" in status:
+            theme = "red"
+        elif "50m以内" in status:
+            theme = "yellow"
+        else:
+            theme = "green"
+        title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=402&op=70&ot=1&vlf=-1" if lat else "", "【埋蔵文化財】", theme)
+        render_law_card(f"🏺 {title}", status, theme)
          
-            forest_status = report_data.get("forest_point_status", "森林なし")
-            theme = "red" if forest_status == "森林あり" else ("orange" if forest_status == "50m以内に森林" else "green")
-            title = make_link_html(f"https://fcloud.pref.shizuoka.jp/fgis/?version=1.26.0525.a#15/{lat:.5f}/{lon:.5f}" if lat else "", "【森林法】", themes_color_get(theme))
-            render_law_card(f"🌲 {title}", forest_status, theme)
+        forest_status = report_data.get("forest_point_status", "森林なし")
+        theme = "red" if forest_status == "森林あり" else ("yellow" if forest_status == "50m以内に森林" else "green")
+        title = make_link_html(f"https://fcloud.pref.shizuoka.jp/fgis/?version=1.26.0525.a#15/{lat:.5f}/{lon:.5f}" if lat else "", "【森林法】", theme)
+        render_law_card(f"🌲 {title}", forest_status, theme)
 
     # 右カラム（2列目）の制御
     with diag_col2:
+        if input_mode != "✍️ 手入力":
+            status = report_data.get("road_status", "区域外")
+            theme = "green" if status == "区域外" else "red"
+            title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=dm&mp=300&op=70&ot=1&vlf=000010000000" if lat else "", "【都市計画道路】", theme)
+            render_law_card(f"🛣️ {title}", status, theme)
+
+        if input_mode != "✍️ 手入力":
+            if lat and lon:
+                road_url = f"https://www2.wagmap.jp/shizuoka/Map?mid=1&mpx={lon + 0.00321:.6f}&mpy={lat - 0.00328:.6f}&bsw=1200&bsh=800"
+                road_title = f'<a href="{road_url}" target="_blank" style="color: #2e7d32; text-decoration: underline;">【周辺の道路】</a>'
+                road_text = f'<a href="{road_url}" target="_blank" style="color: #2e7d32; text-decoration: underline; font-size: 1.4rem; font-weight: bold;">🔗静岡市地図情報サービス</a>'
+            else:
+                road_title, road_text = '【周辺の道路】', '<span style="font-size: 1.4rem; font-weight: bold; color: #2e7d32;">🔗静岡市地図情報サービス</span>'
+            render_law_card(f"🚗 {road_title}", road_text, "green")
+
         if "静岡市" in loc_label and report_data["site_area"] >= 1000:
             import math
             is_factory = "工場" in str(report_data.get("max_basis", ""))
@@ -435,34 +447,20 @@ def show_result_dialog(report_data):
             render_law_card("🌲 【緑地】", "不要", "orange")
 
         bz_status = report_data.get("buffer_zone_status", "不要")
-        render_law_card("🌳 【緩衝帯】", bz_status, "green" if bz_status == "不要" else "orange")
+        render_law_card("🌳 【緩衝帯】", bz_status, "orange")
 
         if not is_point_mode:
             left_text = '<span style="font-size: 1.15rem;">（巴川流域）</span> ' if report_data.get("is_tomoe", False) else ""
             render_law_card("💧 【調整池】", f'{left_text}{report_data.get("pond_volume_str", "―")}', "blue")
 
-        # 👉 手入力モードではない場合のみ、道路・河川系項目を表示
         if input_mode != "✍️ 手入力":
             r_dist_status = report_data.get("river_dist_status", "1km以内に主要河川なし")
-            theme = "green" if "1km以内に主要河川なし" in r_dist_status else "blue"
-            title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=308&op=70&ot=1&vlf=-1" if lat else "", "【周辺の河川】", themes_color_get(theme))
+            theme = "blue"
+            title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=308&op=70&ot=1&vlf=-1" if lat else "", "【周辺の河川】", theme)
             render_law_card(f"🏞️ {title}", r_dist_status, theme)
 
-            status = report_data.get("road_status", "区域外")
-            theme = "green" if status == "区域外" else "red"
-            title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=dm&mp=300&op=70&ot=1&vlf=000010000000" if lat else "", "【都市計画道路】", themes_color_get(theme))
-            render_law_card(f"🛣️ {title}", status, theme)
-
-            if lat and lon:
-                road_url = f"https://www2.wagmap.jp/shizuoka/Map?mid=1&mpx={lon + 0.00321:.6f}&mpy={lat - 0.00328:.6f}&bsw=1200&bsh=800"
-                road_title = f'<a href="{road_url}" target="_blank" style="color: #2e7d32; text-decoration: underline;">【周辺の道路】</a>'
-                road_text = f'<a href="{road_url}" target="_blank" style="color: #2e7d32; text-decoration: underline; font-size: 1.4rem; font-weight: bold;">🔗静岡市地図情報サービス</a>'
-            else:
-                road_title, road_text = '【周辺の道路】', '<span style="font-size: 1.4rem; font-weight: bold; color: #2e7d32;">🔗静岡市地図情報サービス</span>'
-            render_law_card(f"🚗 {road_title}", road_text, "green")
-
 def themes_color_get(theme):
-    return {"red": "#c62828", "orange": "#e65100", "blue": "#0288d1", "green": "#2e7d32"}[theme]
+    return {"red": "#c62828", "orange": "#e65100", "yellow": "#f5a623", "blue": "#0288d1", "green": "#2e7d32"}[theme]
 
 # ----------------------------------------------------
 # 📐 画面レイアウト（2:8 比率）
