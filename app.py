@@ -171,15 +171,16 @@ def generate_pdf(report_data):
 
     # 3. 主要法令に基づく手続要件のデータ成形
     toshi_status = "―" if is_point_mode else ("必要" if report_data.get("is_dev_required") else "不要")
-    agri_status = report_data.get("agri_point_status") or "農地なし"
-    forest_status = report_data.get("forest_point_status") or "森林なし"
-    road_status = report_data.get("road_status") or "区域外"
-    cultural_status = report_data.get("cultural_point_status") or "遺跡なし"
+    agri_status = report_data.get("agri_point_status") or "―"
+    forest_status = report_data.get("forest_point_status") or "―"
+    road_status = report_data.get("road_status") or "―"
+    cultural_status = report_data.get("cultural_point_status") or "―"
     
-    flood_status = report_data.get("flood_status") or "区域外"
-    river_status = report_data.get("river_dist_status") or "1km以内に主要河川なし"
+    flood_status = report_data.get("flood_status") or "―"
+    river_status = report_data.get("river_dist_status") or "―"
     road_display = "―"
-    dosha_status = (report_data.get("dosha_point_status") or "区域外").replace("イエロー、50m以内にレッド", 'イエロー、<br />50m以内にレッド')
+    dosha_base = report_data.get("dosha_point_status") or "―"
+    dosha_status = dosha_base.replace("イエロー、50m以内にレッド", 'イエロー、<br />50m以内にレッド') if dosha_base != "―" else "―"
 
     pond_display, green_display, bz_status = "不要", "不要", "不要"
     
@@ -192,11 +193,14 @@ def generate_pdf(report_data):
 
         max_basis = report_data.get("max_basis") or "不要"
         if "静岡市" in loc_label and site_area >= 1000:
-            is_factory = "工場" in str(max_basis)
-            green_area_val = math.ceil((site_area * 0.25 if is_factory else (report_data.get("max_green") or 0.0)) * 100) / 100
+            green_area_val = math.ceil((report_data.get("max_green") or 0.0) * 100) / 100
+            
             if green_area_val > 0.0:
-                basis_text = "20%+5%, 工場立地法" if is_factory else "5%, 市みどり条例"
-                green_display = f"{green_area_val:,.2f} ㎡以上<br />（{basis_text}）"
+                green_display = f"{green_area_val:,.2f} ㎡以上<br />（{max_basis}）"
+            else:
+                green_display = "不要"
+        else:
+            green_display = "不要"
 
         bz_status = report_data.get("buffer_zone_status") or "不要"
 
@@ -291,7 +295,7 @@ def generate_pdf(report_data):
             {table_body_html}  </table>
         <div class="footer">
             <div class="footer-title">静岡市開発行為 要件判定システム</div>
-            <div class="footer-line">本レポート is GISデータに基づく簡易判定結果であり、実際の状況や最新の指定内容とは異なる場合があります。</div>
+            <div class="footer-line">本レポートはGISデータに基づく簡易判定結果であり、実際の状況や最新の指定内容とは異なる場合があります。</div>
             <div class="footer-line">実務に際しては必ず各種データの出典元情報や、各関係官庁の担当窓口にて最新の法令・要件をご確認ください。</div>
         </div>
     </body>
@@ -453,10 +457,13 @@ def show_result_dialog(report_data):
 
         # 【緑地】（手入力でも維持）
         if "静岡市" in loc_label and report_data["site_area"] >= 1000:
-            is_factory = "工場" in str(report_data.get("max_basis", ""))
-            green_area_val = math.ceil((report_data["site_area"] * 0.25 if is_factory else report_data["max_green"]) * 100) / 100
-            basis_text = "20%+5%, 工場立地法" if is_factory else "5%, 市みどり条例"
-            render_law_card("🌲 【緑地】", f'<span style="font-size: 1.15rem;">（{basis_text}）</span> {green_area_val:,.2f}㎡以上', "orange")
+            basis_text = report_data.get("max_basis", "5%, 市みどり条例")
+            green_area_val = math.ceil(report_data.get("max_green", 0.0) * 100) / 100
+            
+            if green_area_val > 0:
+                render_law_card("🌲 【緑地】", f'<span style="font-size: 1.15rem;">（{basis_text}）</span> {green_area_val:,.2f}㎡以上', "orange")
+            else:
+                render_law_card("🌲 【緑地】", "不要", "orange")
         else:
             render_law_card("🌲 【緑地】", "不要", "orange")
 
@@ -585,7 +592,7 @@ with col_left:
     # 🏢 事業目的マスタの定義
     st.markdown('<span style="font-size: 22px; font-weight: bold;">【事業目的の選択】</span>', unsafe_allow_html=True)
     poses = {
-        "1":  {"label": "工場（製造業）", "cat": "building", "is_factory_law": True},
+        "1":  {"label": "工場（製造業、電気・ガス・熱供給業）", "cat": "building", "is_factory_law": True},
         "2":  {"label": "工場（非製造業）", "cat": "building", "is_factory_law": False},
         "3":  {"label": "自家用倉庫", "cat": "building", "is_factory_law": False},
         "4":  {"label": "営業用倉庫", "cat": "building", "is_factory_law": False},
@@ -616,7 +623,7 @@ with col_left:
         selected_purpose = next(v for v in poses.values() if v["label"] == selected_label)
         is_factory_law = selected_purpose["is_factory_law"]
         if selected_purpose["cat"] == "building":
-            building_area = st.number_input("建築面積 (㎡)", min_value=0.0, value=0.0, step=10.0)
+            building_area = st.number_input("建築面積 (㎡)", min_value=0.0, value=0.0, step=100.0)
 
     st.markdown("---")
 
@@ -926,11 +933,21 @@ with col_center:
         if geom_type != "Point":
             green_reqs = {"5%, 市みどり条例": site_area * 0.05}
             if selected_purpose is not None and selected_purpose["is_factory_law"] and (site_area >= 9000 or building_area >= 3000):
-                use_district = "others"
-                if "準工業" in use_choice: use_district = "quasi_industrial"
-                elif "工業" in use_choice or "工業専用" in use_choice: use_district = "industrial"
-                r_green = 0.05 if use_district == "industrial" else 0.10 if use_district == "quasi_industrial" else 0.20
-                green_reqs[f"{int(r_green*100)}%+5%, 工場立地法"] = site_area * r_green
+                
+                use_str = str(use_choice)
+                if "準工業" in use_str:
+                    r_green = 0.10
+                    label = "10%+5%, 工場立地法"
+                elif "工業専用" in use_str or "工業地域" in use_str:
+                    r_green = 0.05
+                    label = "5%+5%, 工場立地法"
+                else:  
+                    r_green = 0.20
+                    label = "20%+5%, 工場立地法"
+                
+                total_rate = r_green + 0.05
+                green_reqs[label] = site_area * total_rate
+            
             max_basis = max(green_reqs, key=green_reqs.get)
             max_green = green_reqs[max_basis]
 
@@ -1041,9 +1058,22 @@ with col_center:
         max_basis, max_green = "不要", 0.0
         green_reqs = {"5%, 市みどり条例": site_area * 0.05}
         if selected_purpose is not None and selected_purpose["is_factory_law"] and (site_area >= 9000 or building_area >= 3000):
-            use_district_type = "industrial" if "工業" in use_choice else "others"
-            r_green = 0.05 if use_district_type == "industrial" else 0.20
-            green_reqs[f"{int(r_green*100)}%+5%, 工場立地法"] = site_area * r_green
+            
+            # 手入力モード専用：selected_use_zoneを「準工業」最優先で判定
+            use_zone_str = str(selected_use_zone)
+            if "準工業" in use_zone_str:
+                r_green = 0.10
+                label = "10%+5%, 工場立地法"
+            elif "工業専用" in use_zone_str or "工業地域" in use_zone_str:
+                r_green = 0.05
+                label = "5%+5%, 工場立地法"
+            else:
+                r_green = 0.20
+                label = "20%+5%, 工場立地法"
+            
+            total_rate = r_green + 0.05
+            green_reqs[label] = site_area * total_rate
+            
         max_basis = max(green_reqs, key=green_reqs.get)
         max_green = green_reqs[max_basis]
 
