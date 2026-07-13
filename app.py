@@ -63,19 +63,6 @@ def load_spatial_files():
 def load_town_master():
     df = pd.read_csv("townname_shizuoka.csv", encoding="utf-8")
     
-    # 50音頭文字マッピングの最適化
-    kana_map = {
-        "あ": "あいうえお", "か": "かきくけこがぎぐげご", "さ": "さしすせそざじずぜぞ",
-        "た": "たちつてとだじづでどっ", "な": "なにぬねの", "は": "はひふへほばびぶべぼぱぴぷぺぽ",
-        "ま": "まみむめも", "や": "やゆよゃゅょ", "ら": "らりるれろ", "わ": "わをん"
-    }
-    
-    def get_kana_group(kana):
-        if not isinstance(kana, str) or not kana: return "その他"
-        for group, chars in kana_map.items():
-            if kana[0] in chars: return f"{group}行"
-        return "undefined"  
-        
     def get_kana_group_strict(kana):
         if not isinstance(kana, str) or len(kana) == 0: return "その他"
         c = kana[0]
@@ -89,7 +76,7 @@ def load_town_master():
         if c in "やゆよゃゅょ": return "や行"
         if c in "らりるれろ": return "ら行"
         if c in "わをん": return "わ行"
-        return "その他"
+        return "undefined"
 
     df["50音分類"] = df["ふりがな"].apply(get_kana_group_strict)
     return df
@@ -106,7 +93,6 @@ def on_town_change():
                 centroid = town_data.iloc[0].geometry.centroid
                 st.session_state.center_lat = float(centroid.y)
                 st.session_state.center_lon = float(centroid.x)
-                
                 st.toast(f"📍 {town_name} へジャンプしました！")
             else:
                 st.toast(f"⚠️ 空間データの S_NAME に『{town_name}』が見つかりませんでした。")
@@ -124,7 +110,7 @@ def calculate_area_m2(geom):
     return transform(project, geom).area
 
 # ----------------------------------------------------
-# 📄 xhtml2pdf：A4レイアウト（物理タグによる強制改行・完全対策版）
+# 📄 xhtml2pdf：A4レイアウト（PDF出力処理）
 # ----------------------------------------------------
 def generate_pdf(report_data):
     import io
@@ -134,7 +120,7 @@ def generate_pdf(report_data):
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
 
-    # 1. カラー判定ロジック of 定義
+    # 1. カラー判定ロジック
     def get_custom_color(label_name, status_text):
         if not status_text:
             return "#ffffff"
@@ -192,7 +178,7 @@ def generate_pdf(report_data):
     cultural_status = report_data.get("cultural_point_status") or "遺跡なし"
     
     flood_status = report_data.get("flood_status") or "区域外"
-    river_status = (report_data.get("river_dist_status") or "1km以内に主要河川なし").replace("まで", 'まで<br />')
+    river_status = report_data.get("river_dist_status") or "1km以内に主要河川なし"
     road_display = "―"
     dosha_status = (report_data.get("dosha_point_status") or "区域外").replace("イエロー、50m以内にレッド", 'イエロー、<br />50m以内にレッド')
 
@@ -306,7 +292,7 @@ def generate_pdf(report_data):
             {table_body_html}  </table>
         <div class="footer">
             <div class="footer-title">静岡市開発行為 要件判定システム</div>
-            <div class="footer-line">本レポートはGISデータに基づく簡易判定結果であり、実際の状況や最新の指定内容とは異なる場合があります。</div>
+            <div class="footer-line">本レポート is GISデータに基づく簡易判定結果であり、実際の状況や最新の指定内容とは異なる場合があります。</div>
             <div class="footer-line">実務に際しては必ず各種データの出典元情報や、各関係官庁の担当窓口にて最新の法令・要件をご確認ください。</div>
         </div>
     </body>
@@ -320,12 +306,16 @@ def generate_pdf(report_data):
         raise Exception("HTMLからPDFへの変換処理でエラーが発生しました。")
     return pdf_buffer.getvalue()
 
-
 # ----------------------------------------------------
 # 💡 ポップアップ（ダイアログ）の定義
 # ----------------------------------------------------
+def themes_color_get(theme):
+    return {"red": "#c62828", "orange": "#e65100", "yellow": "#f5a623", "blue": "#0288d1", "green": "#2e7d32"}.get(theme, "#555")
+
 @st.dialog("📊 開発要件 判定結果レポート", width="large")
 def show_result_dialog(report_data):
+    import math
+
     st.markdown("""
         <style>
         div[data-testid="stDialog"] h2 {
@@ -342,13 +332,14 @@ def show_result_dialog(report_data):
     input_mode = report_data.get("input_mode", "")
     
     current_zone = report_data["current_zone"]
-    
     target_use_name = report_data["target_use_name"]
     combined_spec_str = report_data.get("combined_spec_str", "―")
 
     def make_link_html(url, title, theme=None):
-        color = themes_color_get(theme) if theme else "#555"
-        return f'<a href="{url}" target="_blank" style="color: {color}; text-decoration: underline;">{title}</a>' if lat and lon else title
+        if lat and lon:
+            color = themes_color_get(theme) if theme else "#555"
+            return f'<a href="{url}" target="_blank" style="color: {color}; text-decoration: underline;">{title}</a>'
+        return title
 
     zone_title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=dm&mp=300&op=70&ot=1&vlf=000001" if lat else "", "🌐 区域区分")
     use_title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=dm&mp=300&op=70&ot=1&vlf=000002" if lat else "", "🏢 用途地域")
@@ -416,7 +407,6 @@ def show_result_dialog(report_data):
             is_dev = report_data.get("is_dev_required", False)
             render_law_card("🚨 【開発許可】" if is_dev else "✅ 【開発許可】", "必要" if is_dev else "不要", "red" if is_dev else "green")
 
-        # 手入力モード（GISによる自動判定不可）の場合は以下を完全に非表示にする
         if input_mode != "✍️ 手入力":
             if report_data.get("gdf_dosha_none"):
                 st.caption("ℹ️ 土砂災害警戒区域データが見つかりません。")
@@ -448,7 +438,6 @@ def show_result_dialog(report_data):
 
     # 右カラム（2列目）の制御
     with diag_col2:
-        # 手入力モードの場合は以下を完全に非表示にする
         if input_mode != "✍️ 手入力":
             status = report_data.get("road_status", "区域外")
             theme = "green" if status == "区域外" else "red"
@@ -465,7 +454,6 @@ def show_result_dialog(report_data):
 
         # 【緑地】（手入力でも維持）
         if "静岡市" in loc_label and report_data["site_area"] >= 1000:
-            import math
             is_factory = "工場" in str(report_data.get("max_basis", ""))
             green_area_val = math.ceil((report_data["site_area"] * 0.25 if is_factory else report_data["max_green"]) * 100) / 100
             basis_text = "20%+5%, 工場立地法" if is_factory else "5%, 市みどり条例"
@@ -482,15 +470,12 @@ def show_result_dialog(report_data):
             left_text = '<span style="font-size: 1.15rem;">（巴川流域）</span> ' if report_data.get("is_tomoe", False) else ""
             render_law_card("💧 【調整池】", f'{left_text}{report_data.get("pond_volume_str", "―")}', "blue")
 
-        # 手入力モードの場合は以下を完全に非表示にする
+        # 周辺の河川（手入力モードの場合は非表示）
         if input_mode != "✍️ 手入力":
             r_dist_status = report_data.get("river_dist_status", "1km以内に主要河川なし")
             theme = "blue"
             title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=308&op=70&ot=1&vlf=-1" if lat else "", "【周辺の河川】", theme)
             render_law_card(f"🏞️ {title}", r_dist_status, theme)
-
-def themes_color_get(theme):
-    return {"red": "#c62828", "orange": "#e65100", "yellow": "#f5a623", "blue": "#0288d1", "green": "#2e7d32"}[theme]
 
 # ----------------------------------------------------
 # 📐 画面レイアウト（2:8 比率）
@@ -761,14 +746,6 @@ with col_center:
             center_lon = user_geom.centroid.x
             center_lat = user_geom.centroid.y
 
-        # --- 開発許可・工場立地法判定 ---
-        use_district = "others"
-        if "準工業" in use_choice: use_district = "quasi_industrial"
-        elif "工業" in use_choice or "工業専用" in use_choice: use_district = "industrial"
-
-        dev_limit = 1000.0 if current_zone == "市街化区域" else 500.0
-        is_dev_required = (site_area >= dev_limit) or (current_zone == "市街化調整区域" and selected_purpose is not None and selected_purpose["cat"] in ["building", "spec_1"])
-
         # --- 町名マスター判定 ---
         if gdf_towns is not None:
             possible_towns = gdf_towns.iloc[list(gdf_towns.sindex.intersection(user_geom.bounds))]
@@ -848,6 +825,22 @@ with col_center:
         if current_zone == "市街化調整区域":
             if kinpei_str == "指定なし": kinpei_str = "60%"
             if youseki_str == "指定なし": youseki_str = "200%"
+
+        # --- 開発許可・工場立地法判定 ---
+        use_district = "others"
+        if "準工業" in use_choice: use_district = "quasi_industrial"
+        elif "工業" in use_choice or "工業専用" in use_choice: use_district = "industrial"
+
+        if "市街化区域" in str(current_zone):
+            dev_limit = 1000.0
+        elif "市街化調整区域" in str(current_zone):
+            dev_limit = 500.0
+        elif "都市計画区域外" in str(current_zone):
+            dev_limit = 10000.0
+        else:
+            dev_limit = 1000.0
+
+        is_dev_required = (site_area >= dev_limit) or (current_zone == "市街化調整区域" and selected_purpose is not None and selected_purpose["cat"] in ["building", "spec_1"])
 
         # --- 土砂災害警戒区域判定 ---
         dosha_point_status, dosha_near, dosha_hit = "区域外", False, False
@@ -975,7 +968,7 @@ with col_center:
 
         # --- 🏞️ 河川距離判定 ---
         river_dist_status = "1km以内に主要河川なし"
-        has_river_dist, nearest_river_name, nearest_river_class, nearest_river_dist = False, "名称不明の河川", "準用・普通河川等", 0
+        has_river_dist, nearest_river_name, nearest_river_dist = False, "名称不明の河川", 0
 
         if gdf_river is not None:
             possible_river = gdf_river.to_crs(epsg=6676).iloc[list(gdf_river.to_crs(epsg=6676).sindex.intersection(user_gdf_m.geometry.iloc[0].buffer(1000).bounds))]
@@ -989,9 +982,8 @@ with col_center:
                     has_river_dist = True
                     r_name = possible_river.loc[min_idx, 'W05_004']
                     nearest_river_name = r_name if pd.notna(r_name) else "名称不明の河川"
-                    r_class = possible_river.loc[min_idx, 'W05_003']
-                    nearest_river_class = "一級河川" if str(r_class).strip() in ['1','2','5','6'] else "二級河川" if str(r_class).strip() in ['3','7'] else "準用・普通河川等"
-                    river_dist_status = f"{nearest_river_class} {nearest_river_name}まで 約 {int(round(nearest_river_dist, -1)):,}m"
+                    
+                    river_dist_status = f"{nearest_river_name}まで 約 {int(round(nearest_river_dist, -1)):,}m"
 
         # --- 🛣️ 都市計画道路判定 ---
         road_status = "区域外"
@@ -1036,7 +1028,15 @@ with col_center:
         has_data = True
         import math
         
-        dev_limit = 1000.0 if current_zone == "市街化区域" else 500.0
+        if "市街化区域" in str(current_zone):
+            dev_limit = 1000.0
+        elif "市街化調整区域" in str(current_zone):
+            dev_limit = 500.0
+        elif "都市計画区域外" in str(current_zone):
+            dev_limit = 10000.0
+        else:
+            dev_limit = 1000.0
+
         is_dev_required = (site_area >= dev_limit) or (current_zone == "市街化調整区域" and selected_purpose is not None and selected_purpose["cat"] in ["building", "spec_1"])
         
         max_basis, max_green = "不要", 0.0
