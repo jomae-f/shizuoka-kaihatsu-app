@@ -93,7 +93,6 @@ def on_town_change():
                 centroid = town_data.iloc[0].geometry.centroid
                 st.session_state.center_lat = float(centroid.y)
                 st.session_state.center_lon = float(centroid.x)
-                st.toast(f"📍 {town_name} へジャンプしました！")
             else:
                 st.toast(f"⚠️ 空間データの S_NAME に『{town_name}』が見つかりませんでした。")
         except Exception as e:
