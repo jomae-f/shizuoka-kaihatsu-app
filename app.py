@@ -5,6 +5,7 @@ from functools import partial
 import streamlit as st
 import geopandas as gpd
 import pandas as pd
+import math
 import folium
 from streamlit_folium import st_folium
 from shapely.geometry import shape, Point
@@ -122,7 +123,6 @@ def calculate_area_m2(geom):
 def generate_pdf(report_data):
     import io
     import os
-    import math
     from xhtml2pdf import pisa
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
@@ -325,7 +325,6 @@ def themes_color_get(theme):
 
 @st.dialog("📊 開発要件 判定結果レポート", width="large")
 def show_result_dialog(report_data):
-    import math
 
     st.markdown("""
         <style>
@@ -979,7 +978,6 @@ with col_center:
             A1 = site_area / 10000.0
             alpha = 2 if A1 >= 2.0 else 1
             pond_volume_base = (122 * 0.9 - (28 / 2) * 0.6) * alpha * 30 * 60 * A1 * (1 / 360)
-            import math
             
             if is_tomoe:
                 factor = 1.1 if A1 <= 0.1 else 1.3 if A1 >= 1.5 else 1.1 + ((A1 - 0.1) * (0.2 / 1.4))
@@ -1051,7 +1049,6 @@ with col_center:
 
     elif input_mode == "✍️ 手入力":
         has_data = True
-        import math
         
         if "市街化区域" in str(current_zone):
             dev_limit = 1000.0
