@@ -41,7 +41,7 @@ def load_spatial_files():
         gdf_tomoe    = gpd.read_feather("data/tomoe.feather")
 
         # 2. 存在チェックや形状補正が必要なデータ
-        gdf_towns    = load_gdf("data/towns.feather")
+        gdf_towns    = load_gdf("data/towns_shizuoka.feather")
         gdf_use      = load_gdf("data/use_districts.feather")
         gdf_dosha    = load_gdf("data/dosha_shizuoka.feather", fix_geom=True)
         gdf_agri     = load_gdf("data/agri_shizuoka.feather")
@@ -81,20 +81,28 @@ def load_town_master():
     df["50音分類"] = df["ふりがな"].apply(get_kana_group_strict)
     return df
 
-
 def on_town_change():
     """手入力で町名が変更されたときに、地図の中心座標を自動更新するコールバック"""
     if "selected_town_name" in st.session_state and st.session_state.selected_town_name:
         town_name = st.session_state.selected_town_name
+        ward_name = st.session_state.get("selected_ward_name") 
+        
         try:
-            town_data = gdf_towns[gdf_towns["S_NAME"] == town_name]
+            if ward_name:
+                full_city_name = f"静岡市{ward_name}"
+                
+                town_data = gdf_towns[
+                    (gdf_towns["CITY_NAME"] == full_city_name) & (gdf_towns["S_NAME"] == town_name)
+                ]
+            else:
+                town_data = gdf_towns[gdf_towns["S_NAME"] == town_name]
             
             if not town_data.empty:
                 centroid = town_data.iloc[0].geometry.centroid
                 st.session_state.center_lat = float(centroid.y)
                 st.session_state.center_lon = float(centroid.x)
             else:
-                st.toast(f"⚠️ 空間データの S_NAME に『{town_name}』が見つかりませんでした。")
+                st.toast(f"⚠️ 空間データに『{full_city_name if ward_name else ''} {town_name}』が見つかりませんでした。")
         except Exception as e:
             st.toast(f"❌ 座標取得エラー: {e}")
 
@@ -193,7 +201,7 @@ def generate_pdf(report_data):
 
         max_basis = report_data.get("max_basis") or "不要"
         if "静岡市" in loc_label and site_area >= 1000:
-            green_area_val = math.ceil((report_data.get("max_green") or 0.0) * 100) / 100
+            green_area_val = math.ceil(round(report_data.get("max_green", 0.0), 4) * 100) / 100
             
             if green_area_val > 0.0:
                 green_display = f"{green_area_val:,.2f} ㎡以上<br />（{max_basis}）"
@@ -458,7 +466,7 @@ def show_result_dialog(report_data):
         # 【緑地】（手入力でも維持）
         if "静岡市" in loc_label and report_data["site_area"] >= 1000:
             basis_text = report_data.get("max_basis", "5%, 市みどり条例")
-            green_area_val = math.ceil(report_data.get("max_green", 0.0) * 100) / 100
+            green_area_val = math.ceil(round(report_data.get("max_green", 0.0), 4) * 100) / 100
             
             if green_area_val > 0:
                 render_law_card("🌲 【緑地】", f'<span style="font-size: 1.15rem;">（{basis_text}）</span> {green_area_val:,.2f}㎡以上', "orange")
@@ -556,7 +564,7 @@ with col_left:
             with col_ward:
                 actual_wards = df_town["区名"].unique()
                 ward_list = [w for w in ["葵区", "駿河区", "清水区"] if w in actual_wards] + [w for w in actual_wards if w not in ["葵区", "駿河区", "清水区"]]
-                selected_ward = st.selectbox("区", ward_list, index=0)
+                selected_ward = st.selectbox("区", ward_list, index=0, key="selected_ward_name")
                 
             with col_kana:
                 df_ward_filtered = df_town[df_town["区名"] == selected_ward]
@@ -949,7 +957,8 @@ with col_center:
                 green_reqs[label] = site_area * total_rate
             
             max_basis = max(green_reqs, key=green_reqs.get)
-            max_green = green_reqs[max_basis]
+            raw_green = green_reqs[max_basis]
+            max_green = math.ceil(round(raw_green, 4) * 100) / 100
 
         buffer_zone_status = "不要"
         area_ha = site_area / 10000.0 if geom_type != "Point" else 0.0
@@ -1059,15 +1068,13 @@ with col_center:
         green_reqs = {"5%, 市みどり条例": site_area * 0.05}
         if selected_purpose is not None and selected_purpose["is_factory_law"] and (site_area >= 9000 or building_area >= 3000):
             
-            # 手入力モード専用：selected_use_zoneを「準工業」最優先で判定
-            use_zone_str = str(selected_use_zone)
-            if "準工業" in use_zone_str:
-                r_green = 0.10
-                label = "10%+5%, 工場立地法"
-            elif "工業専用" in use_zone_str or "工業地域" in use_zone_str:
+            if selected_use_zone == "工業地域・工業専用地域":
                 r_green = 0.05
                 label = "5%+5%, 工場立地法"
-            else:
+            elif selected_use_zone == "準工業地域":
+                r_green = 0.10
+                label = "10%+5%, 工場立地法"
+            else:  
                 r_green = 0.20
                 label = "20%+5%, 工場立地法"
             
@@ -1075,7 +1082,8 @@ with col_center:
             green_reqs[label] = site_area * total_rate
             
         max_basis = max(green_reqs, key=green_reqs.get)
-        max_green = green_reqs[max_basis]
+        raw_green = green_reqs[max_basis]
+        max_green = math.ceil(round(raw_green, 4) * 100) / 100
 
         buffer_zone_status = "不要"
         area_ha = site_area / 10000.0
