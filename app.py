@@ -455,11 +455,11 @@ def show_result_dialog(report_data):
             render_law_card(f"🛣️ {title}", status, theme)
 
             if lat and lon:
-                road_url = f"https://www2.wagmap.jp/shizuoka/Map?mid=1&mpx={lon + 0.00321:.6f}&mpy={lat - 0.00328:.6f}&bsw=1200&bsh=800"
+                road_url = f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=dm2&mp=600&op=100&vlf=-1"
                 road_title = f'<a href="{road_url}" target="_blank" style="color: #2e7d32; text-decoration: underline;">【周辺の道路】</a>'
-                road_text = f'<a href="{road_url}" target="_blank" style="color: #2e7d32; text-decoration: underline; font-size: 1.4rem; font-weight: bold;">🔗静岡市地図情報サービス</a>'
+                road_text = f'<a href="{road_url}" target="_blank" style="color: #2e7d32; text-decoration: underline; font-size: 1.4rem; font-weight: bold;">🔗道路台帳</a>'
             else:
-                road_title, road_text = '【周辺の道路】', '<span style="font-size: 1.4rem; font-weight: bold; color: #2e7d32;">🔗静岡市地図情報サービス</span>'
+                road_title, road_text = '【周辺の道路】', '<span style="font-size: 1.4rem; font-weight: bold; color: #2e7d32;">🔗道路台帳</span>'
             render_law_card(f"🚗 {road_title}", road_text, "green")
 
         # 【緑地】（手入力でも維持）
