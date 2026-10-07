@@ -123,6 +123,7 @@ def calculate_area_m2(geom):
 def generate_pdf(report_data):
     import io
     import os
+    import math
     from xhtml2pdf import pisa
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
@@ -141,11 +142,11 @@ def generate_pdf(report_data):
 
         if label_name == "土砂災害警戒区域":
             if status_text == "レッド": return "#ffcdd2"
-            if any(k in status_text for k in ["イエロー", "50m以内"]): return "#fff9c4"
+            if any(k in status_text for k in ["イエロー", "近接"]): return "#fff9c4"
             return "#c8e6c9" if "区域外" in status_text else "#ffffff"
 
         if label_name in ["農地法", "埋蔵文化財", "森林法"]:
-            if "50m以内" in status_text: return "#fff9c4"
+            if "近接" in status_text: return "#fff9c4"
             kw_map = {"農地法": ("農地あり", "農地なし"), "埋蔵文化財": ("遺跡あり", "遺跡なし"), "森林法": ("森林あり", "森林なし")}
             kw_red, kw_green = kw_map[label_name]
             if kw_red in status_text: return "#ffcdd2"
@@ -188,7 +189,7 @@ def generate_pdf(report_data):
     river_status = report_data.get("river_dist_status") or "―"
     road_display = "―"
     dosha_base = report_data.get("dosha_point_status") or "―"
-    dosha_status = dosha_base.replace("イエロー、50m以内にレッド", 'イエロー、<br />50m以内にレッド') if dosha_base != "―" else "―"
+    dosha_status = dosha_base.replace('イエロー(レッドに近接)', 'イエロー<br />(レッドに近接)') if dosha_base != '―' else '―'
 
     pond_display, green_display, bz_status = "不要", "不要", "不要"
     
@@ -211,6 +212,23 @@ def generate_pdf(report_data):
             green_display = "不要"
 
         bz_status = report_data.get("buffer_zone_status") or "不要"
+
+    all_statuses = [
+        toshi_status, agri_status, forest_status, road_status,
+        cultural_status, flood_status, river_status, dosha_status,
+        pond_display, green_display, bz_status
+    ]
+    has_kinsetsu = any("近接" in str(s) for s in all_statuses)
+    
+    kinsetsu_note_html = ""
+    if has_kinsetsu:
+        kinsetsu_note_html = """
+        <div class="footer-line" style="margin-top: 1.5em;">
+            ※「近接」は判定地点から概ね30m以内の範囲を示しています。
+        </div>
+        """
+    else:
+        kinsetsu_note_html = ""
 
     # 4. HTMLテーブルの組み立て
     if input_mode == "✍️ 手入力":
@@ -281,11 +299,13 @@ def generate_pdf(report_data):
             table.meta-table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
             table.meta-table td {{ padding: 8px 12px; border: 1px solid #555555; vertical-align: middle; }}
             table.meta-table .meta-label {{ color: #121212; font-weight: bold; font-size: 11pt; width: 25%; background-color: #d1d1d1; text-align: center !important; vertical-align: middle; padding: 8px 0px !important; }}
-            table.main-table {{ width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 15px; }}
+            table.main-table {{ width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 8px; }}
             table.main-table th, table.main-table td {{ border: 1px solid #555555; font-size: 9.5pt; vertical-align: middle; }}
             table.main-table th {{ font-weight: bold; text-align: center; padding: 15px 10px; }}
             table.main-table td {{ width: 30%; text-align: left; padding: 10px 10px 10px 15px; }}
-            .footer {{ text-align: center; font-size: 8pt; color: #121212; margin-top: 40px; padding-top: 10px; }}
+            /* 💡【追加】近接注釈用のスタイル設定 */
+            .note-kinsetsu {{ font-size: 8pt; color: #444444; margin-bottom: 12px; text-align: left; padding-left: 2px; }}
+            .footer {{ text-align: center; font-size: 8pt; color: #121212; margin-top: 30px; padding-top: 10px; }}
             .footer-title {{ display: block; font-weight: bold; color: #121212; margin: 0 0 4px 0 !important; }}
             .footer-line {{ display: block; margin: 0 !important; padding: 1px 0 !important; line-height: 1.4; }}
         </style>
@@ -300,12 +320,16 @@ def generate_pdf(report_data):
             <tr><td class="meta-label">建蔽率/容積率</td><td><strong>{combined_spec_str}</strong></td></tr>
         </table>
         <table class="main-table">
-            {table_body_html}  </table>
+            {table_body_html}
+        </table>
+        
         <div class="footer">
             <div class="footer-title">静岡市開発行為 要件判定システム</div>
             <div class="footer-line">本レポートはGISデータに基づく簡易判定結果であり、実際の状況や最新の指定内容とは異なる場合があります。</div>
             <div class="footer-line">実務に際しては必ず各種データの出典元情報や、各関係官庁の担当窓口にて最新の法令・要件をご確認ください。</div>
+            {kinsetsu_note_html}
         </div>
+
     </body>
     </html>
     """
@@ -427,7 +451,7 @@ def show_result_dialog(report_data):
                 render_law_card(f"🚨 {title}", status, theme)
                 
             agri_status = report_data.get("agri_point_status", "農地なし")
-            theme = "red" if agri_status == "農地あり" else ("yellow" if agri_status == "50m以内に農地" else "green")
+            theme = "red" if agri_status == "農地あり" else ("yellow" if agri_status == "農地に近接" else "green")
             title = make_link_html("https://map.maff.go.jp/", "【農地法】", theme)
             render_law_card(f"🚜 {title}", agri_status, theme)
                 
@@ -437,12 +461,12 @@ def show_result_dialog(report_data):
             render_law_card(f"🌊 {title}", status, theme)
 
             status = report_data.get("cultural_point_status", "✅ 対象外")
-            theme = "red" if ("遺跡あり" in status or "あり" in status) else ("yellow" if "50m以内" in status else "green")
+            theme = "red" if ("遺跡あり" in status or "あり" in status) else ("yellow" if "近接" in status else "green")
             title = make_link_html(f"https://city.shizuoka.geocloud.jp/webgis/?z=18&ll={lat:.6f}%2C{lon:.6f}&t=roadmap&mp=402&op=70&ot=1&vlf=-1" if lat else "", "【埋蔵文化財】", theme)
             render_law_card(f"🏺 {title}", status, theme)
              
             forest_status = report_data.get("forest_point_status", "森林なし")
-            theme = "red" if forest_status == "森林あり" else ("yellow" if forest_status == "50m以内に森林" else "green")
+            theme = "red" if forest_status == "森林あり" else ("yellow" if forest_status == "森林に近接" else "green")
             title = make_link_html(f"https://fcloud.pref.shizuoka.jp/fgis/?version=1.26.0525.a#15/{lat:.5f}/{lon:.5f}" if lat else "", "【森林法】", theme)
             render_law_card(f"🌲 {title}", forest_status, theme)
 
@@ -744,8 +768,8 @@ with col_center:
         user_gdf_m = user_gdf.to_crs(epsg=6676)
         target_geom = user_gdf.geometry.iloc[0]
 
-        buffer_geom_m_50 = user_gdf_m.geometry.iloc[0].buffer(50.0)
-        search_poly = gpd.GeoDataFrame(geometry=[buffer_geom_m_50], crs="EPSG:6676").to_crs(epsg=4326).geometry.iloc[0]
+        buffer_geom_m_30 = user_gdf_m.geometry.iloc[0].buffer(30.0)
+        search_poly = gpd.GeoDataFrame(geometry=[buffer_geom_m_30], crs="EPSG:6676").to_crs(epsg=4326).geometry.iloc[0]
         
         road_buffer_geom_m_10 = user_gdf_m.geometry.iloc[0].buffer(10.0)
         road_search_poly = gpd.GeoDataFrame(geometry=[road_buffer_geom_m_10], crs="EPSG:6676").to_crs(epsg=4326).geometry.iloc[0]
@@ -874,7 +898,7 @@ with col_center:
                         if (direct_hits['A33_002_str'] == '2').any():
                             dosha_point_status = "レッド"
                         elif (direct_hits['A33_002_str'] == '1').any():
-                            dosha_point_status = "イエロー、50m以内にレッド" if (hit_dosha_near['A33_002_str'] == '2').any() else "イエロー"
+                            dosha_point_status = "イエロー(レッドに近接)" if (hit_dosha_near['A33_002_str'] == '2').any() else "イエロー"
                         
                         if geom_type != "Point":
                             inter_dosha = gpd.overlay(user_gdf, direct_hits, how='intersection')
@@ -884,8 +908,8 @@ with col_center:
                                 dosha_yellow_area = inter_dosha[inter_dosha['A33_002_str'] == '1']['calc_area'].sum()
                                 dosha_red_area = inter_dosha[inter_dosha['A33_002_str'] == '2']['calc_area'].sum()
                     else:
-                        if (hit_dosha_near['A33_002_str'] == '2').any(): dosha_point_status = "50m以内にレッド"
-                        elif (hit_dosha_near['A33_002_str'] == '1').any(): dosha_point_status = "50m以内にイエロー"
+                        if (hit_dosha_near['A33_002_str'] == '2').any(): dosha_point_status = "レッドに近接"
+                        elif (hit_dosha_near['A33_002_str'] == '1').any(): dosha_point_status = "イエローに近接"
 
         # --- 農地法判定 ---
         agri_point_status = "農地なし"
@@ -894,7 +918,7 @@ with col_center:
             if not possible_agri.empty:
                 hit_agri_near = possible_agri[possible_agri.intersects(search_poly)]
                 if not hit_agri_near.empty:
-                    agri_point_status = "農地あり" if not hit_agri_near[hit_agri_near.intersects(target_geom)].empty else "50m以内に農地"
+                    agri_point_status = "農地あり" if not hit_agri_near[hit_agri_near.intersects(target_geom)].empty else "農地に近接"
 
         # --- 洪水浸水想定区域判定 ---
         flood_hit = False
@@ -924,7 +948,7 @@ with col_center:
             if not possible_cultural.empty:
                 hit_cultural_near = possible_cultural[possible_cultural.intersects(search_poly)]
                 if not hit_cultural_near.empty:
-                    cultural_point_status = "遺跡あり" if not hit_cultural_near[hit_cultural_near.intersects(target_geom)].empty else "50m以内に遺跡"
+                    cultural_point_status = "遺跡あり" if not hit_cultural_near[hit_cultural_near.intersects(target_geom)].empty else "遺跡に近接"
 
         # --- 森林法判定 ---
         forest_point_status = "森林なし"
@@ -933,7 +957,7 @@ with col_center:
             if not possible_forest.empty:
                 hit_forest_near = possible_forest[possible_forest.intersects(search_poly)]
                 if not hit_forest_near.empty:
-                    forest_point_status = "森林あり" if not hit_forest_near[hit_forest_near.intersects(target_geom)].empty else "50m以内に森林"
+                    forest_point_status = "森林あり" if not hit_forest_near[hit_forest_near.intersects(target_geom)].empty else "森林に近接"
 
         # --- 緑地・緩衝帯判定 ---
         max_basis, max_green = "不要", 0.0
